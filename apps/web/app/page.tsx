@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import {
   sampleCompany,
@@ -8,10 +8,46 @@ import {
   sampleObjectives,
   sampleRuns,
 } from "../lib/fixtures";
+import {
+  getCompany,
+  listAgents,
+  Company,
+  AgentDefinition,
+} from "../lib/api-client";
 import { AgentCard } from "../components/AgentCard";
 import { StateContainer } from "../components/StateContainer";
 
 export default function Home() {
+  const [company, setCompany] = useState<Company>(
+    sampleCompany as unknown as Company
+  );
+  const [agents, setAgents] = useState<AgentDefinition[]>(
+    sampleAgents as unknown as AgentDefinition[]
+  );
+  const [isOffline, setIsOffline] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    Promise.all([getCompany(), listAgents()])
+      .then(([companyData, agentsData]) => {
+        if (!mounted) return;
+        setCompany(companyData);
+        setAgents(agentsData);
+        setIsOffline(false);
+      })
+      .catch((err) => {
+        if (!mounted) return;
+        console.warn(
+          "API offline or error fetching dashboard data, falling back to fixtures:",
+          err
+        );
+        setIsOffline(true);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   const activeObjective = sampleObjectives.find((o) => o.status === "active");
   const recentRuns = sampleRuns;
 
@@ -43,15 +79,28 @@ export default function Home() {
             <div>
               <div
                 style={{
-                  fontSize: "0.75rem",
-                  textTransform: "uppercase",
-                  color: "var(--text-accent)",
-                  fontWeight: 600,
-                  letterSpacing: "0.05em",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.5rem",
                   marginBottom: "0.25rem",
                 }}
               >
-                Company Mission
+                <div
+                  style={{
+                    fontSize: "0.75rem",
+                    textTransform: "uppercase",
+                    color: "var(--text-accent)",
+                    fontWeight: 600,
+                    letterSpacing: "0.05em",
+                  }}
+                >
+                  Company Mission
+                </div>
+                {isOffline && (
+                  <span className="badge badge-proposed" style={{ fontSize: "0.65rem" }}>
+                    ⚡ Offline Mode
+                  </span>
+                )}
               </div>
               <h1
                 style={{
@@ -60,7 +109,7 @@ export default function Home() {
                   marginBottom: "0.5rem",
                 }}
               >
-                {sampleCompany.name}
+                {company.name}
               </h1>
               <p
                 style={{
@@ -70,7 +119,7 @@ export default function Home() {
                   lineHeight: 1.6,
                 }}
               >
-                “{sampleCompany.mission}”
+                “{company.mission}”
               </p>
             </div>
 
@@ -91,7 +140,7 @@ export default function Home() {
               <span
                 style={{ fontSize: "0.75rem", color: "var(--text-tertiary)" }}
               >
-                1 seeded company • 3 agents
+                1 seeded company • {agents.length} agents
               </span>
             </div>
           </div>
@@ -113,7 +162,9 @@ export default function Home() {
               <strong style={{ color: "var(--text-primary)" }}>
                 Working Rules:
               </strong>{" "}
-              {sampleCompany.working_rules}
+              {Array.isArray(company.working_rules)
+                ? company.working_rules.join(" • ")
+                : company.working_rules}
             </div>
           </div>
         </div>
@@ -137,24 +188,26 @@ export default function Home() {
                   display: "flex",
                   alignItems: "center",
                   gap: "0.5rem",
-                  marginBottom: "0.3rem",
+                  marginBottom: "0.25rem",
                 }}
               >
                 <span className="badge badge-running">Active Objective</span>
                 <span
-                  style={{ fontSize: "0.75rem", color: "var(--text-tertiary)" }}
+                  style={{
+                    fontSize: "0.75rem",
+                    color: "var(--text-tertiary)",
+                  }}
                 >
-                  ID: {activeObjective.id.slice(0, 8)}
+                  Planning Phase
                 </span>
               </div>
-              <h3 style={{ fontSize: "1.15rem", marginBottom: "0.25rem" }}>
+              <h2 style={{ fontSize: "1.25rem", marginBottom: "0.25rem" }}>
                 {activeObjective.title}
-              </h3>
+              </h2>
               <p
                 style={{
                   fontSize: "0.9rem",
                   color: "var(--text-secondary)",
-                  maxWidth: "800px",
                 }}
               >
                 {activeObjective.desired_outcome}
@@ -164,15 +217,15 @@ export default function Home() {
             <div style={{ display: "flex", gap: "0.75rem" }}>
               <Link
                 href={`/objectives/${activeObjective.id}/plan`}
-                className="btn btn-primary"
+                className="btn btn-primary btn-sm"
               >
-                Review Approved Plan →
+                Review Plan →
               </Link>
             </div>
           </div>
         )}
 
-        {/* Agent Cards Section */}
+        {/* Specialist Agent Profiles Grid */}
         <div>
           <div
             style={{
@@ -183,15 +236,17 @@ export default function Home() {
             }}
           >
             <div>
-              <h2 style={{ fontSize: "1.3rem" }}>Specialist Workforce</h2>
+              <h2 style={{ fontSize: "1.25rem" }}>
+                Fixed Specialist Agents
+              </h2>
               <p
                 style={{
-                  fontSize: "0.875rem",
+                  fontSize: "0.85rem",
                   color: "var(--text-secondary)",
                 }}
               >
-                Three fixed agent profiles orchestrating strategy, marketing,
-                and operations.
+                Three seeded agents with distinct responsibilities and runtime
+                models
               </p>
             </div>
 
@@ -203,10 +258,10 @@ export default function Home() {
           </div>
 
           <div className="grid-cols-3">
-            {sampleAgents.map((agent) => (
+            {agents.map((agent) => (
               <AgentCard
                 key={agent.id}
-                agent={agent}
+                agent={agent as any}
                 badgeType={
                   agent.slug === "chief-of-staff"
                     ? "approved"
