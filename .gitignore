@@ -1,0 +1,11 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+.next/
+.pnpm-store/
+.pytest_cache/
+.venv/
+*.tsbuildinfo
+__pycache__/
+node_modules/

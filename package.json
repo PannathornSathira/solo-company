@@ -1,0 +1,16 @@
+{
+  "name": "solo-company-platform",
+  "private": true,
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm --filter @solo-company/web build",
+    "dev:api": "uv --directory apps/api run uvicorn app.main:app --reload",
+    "dev:web": "pnpm --filter @solo-company/web dev",
+    "test": "pnpm run test:api && pnpm run test:web",
+    "test:api": "uv --directory apps/api run pytest",
+    "test:web": "pnpm --filter @solo-company/web typecheck"
+  }
+}

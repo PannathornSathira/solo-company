@@ -1,0 +1,6 @@
+packages:
+  - apps/*
+
+# Next can run without native image optimization in this bootstrap.
+allowBuilds:
+  sharp: false

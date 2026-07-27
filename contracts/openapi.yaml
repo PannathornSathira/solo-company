@@ -1,0 +1,861 @@
+openapi: 3.1.0
+info:
+  title: Solo Company API
+  version: 0.1.0
+  description: Contract for the Phase 1 single-company MVP.
+servers:
+  - url: http://localhost:8000
+paths:
+  /api/health:
+    get:
+      operationId: getHealth
+      tags: [system]
+      responses:
+        "200":
+          description: API is ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /api/company:
+    get:
+      operationId: getCompany
+      tags: [company]
+      responses:
+        "200":
+          description: The seeded company.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Company"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateCompany
+      tags: [company]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompanyUpdate"
+      responses:
+        "200":
+          description: Updated company.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Company"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/agents:
+    get:
+      operationId: listAgents
+      tags: [agents]
+      responses:
+        "200":
+          description: The company's fixed agent profiles.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AgentDefinition"
+
+  /api/agents/{agent_id}:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+    get:
+      operationId: getAgent
+      tags: [agents]
+      responses:
+        "200":
+          description: Agent profile.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentDefinition"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateAgent
+      tags: [agents]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentUpdate"
+      responses:
+        "200":
+          description: Updated agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentDefinition"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/objectives:
+    get:
+      operationId: listObjectives
+      tags: [work]
+      responses:
+        "200":
+          description: Objectives newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Objective"
+    post:
+      operationId: createObjective
+      tags: [work]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ObjectiveCreate"
+      responses:
+        "201":
+          description: Created objective.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Objective"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/objectives/{objective_id}:
+    parameters:
+      - $ref: "#/components/parameters/ObjectiveId"
+    get:
+      operationId: getObjective
+      tags: [work]
+      responses:
+        "200":
+          description: Objective details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Objective"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/objectives/{objective_id}/plan:
+    parameters:
+      - $ref: "#/components/parameters/ObjectiveId"
+    post:
+      operationId: createPlan
+      tags: [work]
+      responses:
+        "201":
+          description: Proposed plan containing two to five work items.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Plan"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/objectives/{objective_id}/plan/revise:
+    parameters:
+      - $ref: "#/components/parameters/ObjectiveId"
+    post:
+      operationId: revisePlan
+      tags: [work]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlanRevision"
+      responses:
+        "200":
+          description: Revised proposed plan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Plan"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/objectives/{objective_id}/plan/approve:
+    parameters:
+      - $ref: "#/components/parameters/ObjectiveId"
+      - $ref: "#/components/parameters/IdempotencyKey"
+    post:
+      operationId: approvePlan
+      tags: [work]
+      responses:
+        "201":
+          description: Approved plan and the one run started for this key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRun"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/work-items:
+    get:
+      operationId: listWorkItems
+      tags: [work]
+      parameters:
+        - name: objective_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/WorkItemStatus"
+      responses:
+        "200":
+          description: Work items ordered by objective and position.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WorkItem"
+
+  /api/runs/{run_id}:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    get:
+      operationId: getRun
+      tags: [runs]
+      responses:
+        "200":
+          description: Run details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRun"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/runs/{run_id}/events:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    get:
+      operationId: listRunEvents
+      tags: [runs]
+      parameters:
+        - name: after_sequence
+          in: query
+          description: Return events with a greater sequence number.
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Persisted events in ascending sequence order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RunEvent"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/runs/{run_id}/stream:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    get:
+      operationId: streamRunEvents
+      tags: [runs]
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          description: Last received run-event sequence.
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "200":
+          description: Persisted run events as Server-Sent Events.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/runs/{run_id}/artifacts:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    get:
+      operationId: listRunArtifacts
+      tags: [runs]
+      responses:
+        "200":
+          description: Latest artifact versions for the run.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Artifact"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  parameters:
+    AgentId:
+      name: agent_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ObjectiveId:
+      name: objective_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Reusing a key returns the original run and never starts another.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+
+  responses:
+    NotFound:
+      description: The company-scoped resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: The requested transition is not allowed in the current state.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ValidationError:
+      description: Request validation failed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok
+
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+
+    Company:
+      type: object
+      additionalProperties: false
+      required:
+        [id, name, description, mission, working_rules, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        description:
+          type: string
+          maxLength: 2000
+        mission:
+          type: string
+          maxLength: 2000
+        working_rules:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 500
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CompanyUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        description:
+          type: string
+          maxLength: 2000
+        mission:
+          type: string
+          maxLength: 2000
+        working_rules:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 500
+
+    AgentDefinition:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - company_id
+        - slug
+        - name
+        - role
+        - objective
+        - responsibilities
+        - runtime_model_alias
+        - prompt_version
+        - enabled
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        company_id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+          pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          maxLength: 80
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        role:
+          type: string
+          minLength: 1
+          maxLength: 120
+        objective:
+          type: string
+          maxLength: 2000
+        responsibilities:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 500
+        runtime_model_alias:
+          type: string
+          minLength: 1
+          maxLength: 80
+        prompt_version:
+          type: string
+          minLength: 1
+          maxLength: 40
+        enabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    AgentUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        role:
+          type: string
+          minLength: 1
+          maxLength: 120
+        objective:
+          type: string
+          maxLength: 2000
+        responsibilities:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 500
+        runtime_model_alias:
+          type: string
+          minLength: 1
+          maxLength: 80
+        prompt_version:
+          type: string
+          minLength: 1
+          maxLength: 40
+        enabled:
+          type: boolean
+
+    ObjectiveStatus:
+      type: string
+      enum:
+        [draft, planning, awaiting_approval, approved, running, completed, failed]
+
+    Objective:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - company_id
+        - title
+        - desired_outcome
+        - context
+        - constraints
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        company_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        desired_outcome:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        context:
+          type: string
+          maxLength: 10000
+        constraints:
+          type: array
+          maxItems: 30
+          items:
+            type: string
+            minLength: 1
+            maxLength: 1000
+        status:
+          $ref: "#/components/schemas/ObjectiveStatus"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ObjectiveCreate:
+      type: object
+      additionalProperties: false
+      required: [title, desired_outcome]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        desired_outcome:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        context:
+          type: string
+          maxLength: 10000
+          default: ""
+        constraints:
+          type: array
+          maxItems: 30
+          default: []
+          items:
+            type: string
+            minLength: 1
+            maxLength: 1000
+
+    WorkItemStatus:
+      type: string
+      enum: [proposed, approved, running, review, done, failed]
+
+    WorkItem:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - company_id
+        - objective_id
+        - assigned_agent_id
+        - title
+        - instructions
+        - deliverable_type
+        - status
+        - position
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        company_id:
+          type: string
+          format: uuid
+        objective_id:
+          type: string
+          format: uuid
+        parent_id:
+          type: [string, "null"]
+          format: uuid
+        assigned_agent_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        instructions:
+          type: string
+          minLength: 1
+          maxLength: 10000
+        deliverable_type:
+          type: string
+          minLength: 1
+          maxLength: 80
+        status:
+          $ref: "#/components/schemas/WorkItemStatus"
+        position:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Plan:
+      type: object
+      additionalProperties: false
+      required: [objective_id, work_items]
+      properties:
+        objective_id:
+          type: string
+          format: uuid
+        work_items:
+          type: array
+          minItems: 2
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/WorkItem"
+
+    PlanRevision:
+      type: object
+      additionalProperties: false
+      required: [feedback]
+      properties:
+        feedback:
+          type: string
+          minLength: 1
+          maxLength: 4000
+
+    RunStatus:
+      type: string
+      enum: [pending, awaiting_approval, running, completed, failed]
+
+    AgentRun:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - company_id
+        - objective_id
+        - status
+        - graph_version
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        company_id:
+          type: string
+          format: uuid
+        objective_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/RunStatus"
+        graph_version:
+          type: string
+          minLength: 1
+          maxLength: 40
+        started_at:
+          type: [string, "null"]
+          format: date-time
+        finished_at:
+          type: [string, "null"]
+          format: date-time
+        error_code:
+          type: [string, "null"]
+          maxLength: 80
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    EventType:
+      type: string
+      enum:
+        - run.created
+        - plan.proposed
+        - plan.revision_requested
+        - plan.approved
+        - work.started
+        - work.progress
+        - artifact.created
+        - work.completed
+        - work.failed
+        - brief.created
+        - run.completed
+        - run.failed
+
+    RunEvent:
+      type: object
+      additionalProperties: false
+      required:
+        [id, company_id, run_id, sequence, event_type, summary, payload_json, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        company_id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        sequence:
+          type: integer
+          minimum: 1
+        event_type:
+          $ref: "#/components/schemas/EventType"
+        summary:
+          type: string
+          minLength: 1
+          maxLength: 240
+        payload_json:
+          type: object
+          additionalProperties: true
+          x-max-utf8-bytes: 16384
+          description: Size is checked after compact UTF-8 JSON encoding.
+        created_at:
+          type: string
+          format: date-time
+
+    Artifact:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - company_id
+        - run_id
+        - artifact_type
+        - title
+        - content_markdown
+        - version
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        company_id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        work_item_id:
+          type: [string, "null"]
+          format: uuid
+        artifact_type:
+          type: string
+          minLength: 1
+          maxLength: 80
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        content_markdown:
+          type: string
+          maxLength: 200000
+        version:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
