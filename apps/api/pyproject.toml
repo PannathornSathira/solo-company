@@ -9,6 +9,9 @@ dependencies = [
   "sqlalchemy>=2.0,<3",
   "alembic>=1.13,<2",
   "psycopg[binary]>=3.2,<4",
+  "langgraph>=1.2,<2",
+  "langgraph-checkpoint-postgres>=3.1,<4",
+  "google-genai>=2.13,<3",
 ]
 
 [dependency-groups]
@@ -21,6 +24,10 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+  "real_model: opt-in smoke tests that call a configured frontier model",
+  "postgres: opt-in tests that require local PostgreSQL",
+]
 
 [tool.uv]
 package = false

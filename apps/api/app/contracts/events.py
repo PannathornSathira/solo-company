@@ -23,7 +23,7 @@ EventType = Literal[
 
 
 class RunEvent(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
 
     id: UUID
     company_id: UUID

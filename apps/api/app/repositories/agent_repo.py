@@ -39,6 +39,23 @@ DEFAULT_AGENTS_DATA = [
         "prompt_version": "v1.0.0",
         "enabled": True,
     },
+    {
+        "id": UUID("a3000000-0000-4000-8000-000000000003"),
+        "slug": "operations-manager",
+        "name": "Operations Manager",
+        "role": "Operations Manager",
+        "objective": (
+            "Design checklists, workflows, and operational procedures for execution."
+        ),
+        "responsibilities": [
+            "Workflow and standard operating procedure design",
+            "Checklist creation and onboarding documentation",
+            "Quality verification and delivery assurance",
+        ],
+        "runtime_model_alias": "gemini-3.1-pro",
+        "prompt_version": "v1.0.0",
+        "enabled": True,
+    },
 ]
 
 
@@ -53,11 +70,11 @@ def seed_default_agents_if_empty(
             )
         )
     )
-    if existing:
-        return existing
-
-    agents = []
+    existing_slugs = {agent.slug for agent in existing}
+    created = []
     for data in DEFAULT_AGENTS_DATA:
+        if data["slug"] in existing_slugs:
+            continue
         agent = AgentDefinitionModel(
             id=data["id"],
             company_id=company_id,
@@ -73,16 +90,25 @@ def seed_default_agents_if_empty(
             updated_at=utcnow(),
         )
         db.add(agent)
-        agents.append(agent)
-    db.commit()
-    for agent in agents:
-        db.refresh(agent)
-    return agents
+        created.append(agent)
+    if created:
+        db.commit()
+        for agent in created:
+            db.refresh(agent)
+    return list(
+        db.scalars(
+            select(AgentDefinitionModel)
+            .where(AgentDefinitionModel.company_id == company_id)
+            .order_by(AgentDefinitionModel.created_at.asc())
+        )
+    )
 
 
 def list_agents(
     db: Session, company_id: UUID = DEFAULT_COMPANY_ID
 ) -> list[AgentDefinitionModel]:
+    if company_id == DEFAULT_COMPANY_ID:
+        return seed_default_agents_if_empty(db, company_id=company_id)
     agents = list(
         db.scalars(
             select(AgentDefinitionModel)
@@ -90,8 +116,6 @@ def list_agents(
             .order_by(AgentDefinitionModel.created_at.asc())
         )
     )
-    if not agents and company_id == DEFAULT_COMPANY_ID:
-        return seed_default_agents_if_empty(db, company_id=company_id)
     return agents
 
 
@@ -101,6 +125,24 @@ def get_agent(
     agent = db.scalar(
         select(AgentDefinitionModel).where(
             AgentDefinitionModel.id == agent_id,
+            AgentDefinitionModel.company_id == company_id,
+        )
+    )
+    if agent is None:
+        raise NotFoundError("Agent profile not found")
+    return agent
+
+
+def get_agent_by_slug(
+    db: Session,
+    slug: str,
+    company_id: UUID = DEFAULT_COMPANY_ID,
+) -> AgentDefinitionModel:
+    if company_id == DEFAULT_COMPANY_ID:
+        seed_default_agents_if_empty(db, company_id=company_id)
+    agent = db.scalar(
+        select(AgentDefinitionModel).where(
+            AgentDefinitionModel.slug == slug,
             AgentDefinitionModel.company_id == company_id,
         )
     )

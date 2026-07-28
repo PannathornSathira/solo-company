@@ -1,12 +1,15 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.orm import Session
 
 from app.contracts.objectives import Objective, ObjectiveCreate
+from app.contracts.runtime import AgentRun, Plan, PlanRevision
 from app.contracts.work_items import WorkItem, WorkItemStatus
 from app.db.session import get_db
 from app.repositories import objective_repo, work_item_repo
+from app.runtime.dependencies import get_runtime_service
+from app.runtime.service import RuntimeService
 
 router = APIRouter(tags=["work"])
 
@@ -47,6 +50,53 @@ def get_objective(
 ) -> Objective:
     objective = objective_repo.get_objective(db, objective_id=objective_id)
     return Objective.model_validate(objective)
+
+
+@router.post(
+    "/api/objectives/{objective_id}/plan",
+    response_model=Plan,
+    status_code=status.HTTP_201_CREATED,
+    operation_id="createPlan",
+    summary="Create a proposed sequential work plan",
+)
+def create_plan(
+    objective_id: UUID,
+    runtime: RuntimeService = Depends(get_runtime_service),
+) -> Plan:
+    return runtime.create_plan(objective_id)
+
+
+@router.post(
+    "/api/objectives/{objective_id}/plan/revise",
+    response_model=Plan,
+    operation_id="revisePlan",
+    summary="Revise a proposed work plan",
+)
+def revise_plan(
+    objective_id: UUID,
+    revision: PlanRevision,
+    runtime: RuntimeService = Depends(get_runtime_service),
+) -> Plan:
+    return runtime.revise_plan(objective_id, revision.feedback)
+
+
+@router.post(
+    "/api/objectives/{objective_id}/plan/approve",
+    response_model=AgentRun,
+    status_code=status.HTTP_201_CREATED,
+    operation_id="approvePlan",
+    summary="Approve and execute the proposed plan",
+)
+def approve_plan(
+    objective_id: UUID,
+    idempotency_key: str = Header(
+        min_length=1,
+        max_length=128,
+        alias="Idempotency-Key",
+    ),
+    runtime: RuntimeService = Depends(get_runtime_service),
+) -> AgentRun:
+    return runtime.approve_plan(objective_id, idempotency_key)
 
 
 @router.get(

@@ -1,12 +1,13 @@
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.contracts.work_items import WorkItemStatus
-from app.db.models import WorkItemModel, utcnow
+from app.db.models import AgentDefinitionModel, WorkItemModel, utcnow
 from app.repositories.company_repo import DEFAULT_COMPANY_ID
 from app.repositories.exceptions import ConflictError, NotFoundError
+from app.runtime.contracts import PlanDraft
 
 ALLOWED_WORK_ITEM_TRANSITIONS: dict[str, set[str]] = {
     "proposed": {"approved", "failed"},
@@ -76,3 +77,94 @@ def update_work_item_status(
     db.commit()
     db.refresh(work_item)
     return work_item
+
+
+def replace_proposed_work_items(
+    db: Session,
+    *,
+    objective_id: UUID,
+    plan: PlanDraft,
+    agents_by_slug: dict[str, AgentDefinitionModel],
+    company_id: UUID = DEFAULT_COMPANY_ID,
+) -> list[WorkItemModel]:
+    existing = list_work_items(
+        db, objective_id=objective_id, company_id=company_id
+    )
+    if any(item.status != "proposed" for item in existing):
+        raise ConflictError("Only a proposed plan can be replaced")
+
+    db.execute(
+        delete(WorkItemModel).where(
+            WorkItemModel.objective_id == objective_id,
+            WorkItemModel.company_id == company_id,
+            WorkItemModel.status == "proposed",
+        )
+    )
+    now = utcnow()
+    work_items = []
+    for position, draft in enumerate(plan.work_items, start=1):
+        agent = agents_by_slug.get(draft.assigned_agent_slug)
+        if agent is None or not agent.enabled:
+            raise ConflictError(
+                f"Plan assigned unavailable specialist '{draft.assigned_agent_slug}'"
+            )
+        work_item = WorkItemModel(
+            id=uuid4(),
+            company_id=company_id,
+            objective_id=objective_id,
+            parent_id=None,
+            assigned_agent_id=agent.id,
+            title=draft.title,
+            instructions=draft.instructions,
+            deliverable_type=draft.deliverable_type,
+            status="proposed",
+            position=position,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(work_item)
+        work_items.append(work_item)
+    db.commit()
+    for work_item in work_items:
+        db.refresh(work_item)
+    return work_items
+
+
+def approve_work_items(
+    db: Session,
+    *,
+    objective_id: UUID,
+    company_id: UUID = DEFAULT_COMPANY_ID,
+) -> list[WorkItemModel]:
+    work_items = list_work_items(
+        db, objective_id=objective_id, company_id=company_id
+    )
+    if not 2 <= len(work_items) <= 5:
+        raise ConflictError("Plan must contain between two and five work items")
+    if any(item.status != "proposed" for item in work_items):
+        raise ConflictError("Only proposed work items can be approved")
+    now = utcnow()
+    for work_item in work_items:
+        work_item.status = "approved"
+        work_item.updated_at = now
+    db.commit()
+    for work_item in work_items:
+        db.refresh(work_item)
+    return work_items
+
+
+def get_next_approved_work_item(
+    db: Session,
+    *,
+    objective_id: UUID,
+    company_id: UUID = DEFAULT_COMPANY_ID,
+) -> WorkItemModel | None:
+    return db.scalar(
+        select(WorkItemModel)
+        .where(
+            WorkItemModel.objective_id == objective_id,
+            WorkItemModel.company_id == company_id,
+            WorkItemModel.status == "approved",
+        )
+        .order_by(WorkItemModel.position.asc())
+    )

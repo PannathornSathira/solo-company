@@ -5,9 +5,13 @@ def test_list_agents_seeds_default_agents(client: TestClient) -> None:
     response = client.get("/api/agents")
     assert response.status_code == 200
     agents = response.json()
-    assert len(agents) == 2
+    assert len(agents) == 3
     slugs = {agent["slug"] for agent in agents}
-    assert slugs == {"chief-of-staff", "marketing-specialist"}
+    assert slugs == {
+        "chief-of-staff",
+        "marketing-specialist",
+        "operations-manager",
+    }
 
 
 def test_get_agent_by_id(client: TestClient) -> None:

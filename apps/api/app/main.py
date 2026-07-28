@@ -8,26 +8,43 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.contracts.common import Error, Health
+from app.config import get_settings
 from app.db.session import get_session_factory
 from app.repositories.agent_repo import seed_default_agents_if_empty
 from app.repositories.exceptions import ConflictError, NotFoundError
-from app.routers import agents, company, objectives
+from app.routers import agents, company, objectives, runs
+from app.runtime.factory import create_production_runtime
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    runtime_context = None
+    created_runtime = False
     try:
         factory = get_session_factory()
         with factory() as db:
             seed_default_agents_if_empty(db)
+        if getattr(app.state, "runtime_service", None) is None:
+            runtime_service, runtime_context = create_production_runtime(
+                get_settings()
+            )
+            app.state.runtime_service = runtime_service
+            created_runtime = True
     except Exception as exc:
         logger.warning(
-            "Could not connect to database during startup seeding (is PostgreSQL running?): %s",
+            "Could not initialize database-backed runtime "
+            "(is PostgreSQL running?): %s",
             exc,
         )
-    yield
+    try:
+        yield
+    finally:
+        if created_runtime:
+            del app.state.runtime_service
+        if runtime_context is not None:
+            runtime_context.__exit__(None, None, None)
 
 
 app = FastAPI(
@@ -74,6 +91,7 @@ def validation_exception_handler(
 app.include_router(company.router)
 app.include_router(agents.router)
 app.include_router(objectives.router)
+app.include_router(runs.router)
 
 
 @app.get(

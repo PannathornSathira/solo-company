@@ -154,6 +154,14 @@ class WorkItemModel(Base):
 
 class AgentRunModel(Base):
     __tablename__ = "agent_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id",
+            "objective_id",
+            "approval_idempotency_key",
+            name="uq_agent_runs_approval_idempotency",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
     company_id: Mapped[UUID] = mapped_column(
@@ -177,6 +185,9 @@ class AgentRunModel(Base):
         UTCDateTime, nullable=True
     )
     error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    approval_idempotency_key: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, nullable=False, default=utcnow
     )
