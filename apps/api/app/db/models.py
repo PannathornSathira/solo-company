@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    Index,
     JSON,
     String,
     Text,
@@ -161,6 +162,18 @@ class AgentRunModel(Base):
             "approval_idempotency_key",
             name="uq_agent_runs_approval_idempotency",
         ),
+        Index(
+            "uq_agent_runs_active_objective",
+            "company_id",
+            "objective_id",
+            unique=True,
+            postgresql_where=sa.text(
+                "status IN ('pending', 'awaiting_approval', 'running')"
+            ),
+            sqlite_where=sa.text(
+                "status IN ('pending', 'awaiting_approval', 'running')"
+            ),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
@@ -187,6 +200,44 @@ class AgentRunModel(Base):
     error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     approval_idempotency_key: Mapped[str | None] = mapped_column(
         String(128), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class RunRetryRequestModel(Base):
+    __tablename__ = "run_retry_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "idempotency_key",
+            name="uq_run_retry_requests_run_key",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("agent_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    retry_target: Mapped[str] = mapped_column(String(40), nullable=False)
+    work_item_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("work_items.id", ondelete="SET NULL"),
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, nullable=False, default=utcnow

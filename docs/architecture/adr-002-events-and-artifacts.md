@@ -42,11 +42,14 @@ event payload does not duplicate artifact content.
 Secrets, credentials, raw prompts, private reasoning, and provider-native
 response bodies are forbidden in summaries, payloads, and artifact content.
 SSE sends the persisted event envelope and uses its sequence as the event ID.
+`work.progress` also records an owner-requested retry, including the retry
+target and prior error code without duplicating artifact content.
 
 ## Consequences
 
 - REST reload and SSE live updates use the same source of truth.
 - Reconnect can resume after the last observed sequence.
+- Browser clients may supply an initial `after_sequence` cursor; automatic SSE
+  reconnects use `Last-Event-ID`, and the server applies the greater value.
 - New event types or artifact fields require this ADR and the OpenAPI contract
   to be revised together.
-

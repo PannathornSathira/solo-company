@@ -15,7 +15,7 @@ ALLOWED_OBJECTIVE_TRANSITIONS: dict[str, set[str]] = {
     "approved": {"running", "failed"},
     "running": {"completed", "failed"},
     "completed": set(),
-    "failed": {"draft", "planning"},
+    "failed": {"draft", "planning", "running"},
 }
 
 
@@ -85,6 +85,8 @@ def update_objective_status(
     objective_id: UUID,
     new_status: ObjectiveStatus,
     company_id: UUID = DEFAULT_COMPANY_ID,
+    *,
+    commit: bool = True,
 ) -> ObjectiveModel:
     objective = get_objective(
         db, objective_id=objective_id, company_id=company_id
@@ -92,6 +94,9 @@ def update_objective_status(
     validate_objective_transition(objective.status, new_status)
     objective.status = new_status
     objective.updated_at = utcnow()
-    db.commit()
-    db.refresh(objective)
+    if commit:
+        db.commit()
+        db.refresh(objective)
+    else:
+        db.flush()
     return objective

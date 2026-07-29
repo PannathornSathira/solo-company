@@ -31,6 +31,10 @@ paths:
                 $ref: "#/components/schemas/Company"
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
     patch:
       operationId: updateCompany
       tags: [company]
@@ -79,6 +83,10 @@ paths:
                 $ref: "#/components/schemas/AgentDefinition"
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
     patch:
       operationId: updateAgent
       tags: [agents]
@@ -99,6 +107,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /api/objectives:
     get:
@@ -147,6 +157,10 @@ paths:
                 $ref: "#/components/schemas/Objective"
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /api/objectives/{objective_id}/plan:
     parameters:
@@ -165,6 +179,12 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/UpstreamError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
         "422":
           $ref: "#/components/responses/ValidationError"
 
@@ -191,6 +211,12 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/UpstreamError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
         "422":
           $ref: "#/components/responses/ValidationError"
 
@@ -203,7 +229,7 @@ paths:
       tags: [work]
       responses:
         "201":
-          description: Approved plan and the one run started for this key.
+          description: Approved plan and immediately returned running run.
           content:
             application/json:
               schema:
@@ -212,6 +238,10 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
         "422":
           $ref: "#/components/responses/ValidationError"
 
@@ -254,6 +284,10 @@ paths:
                 $ref: "#/components/schemas/AgentRun"
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /api/runs/{run_id}/events:
     parameters:
@@ -280,6 +314,10 @@ paths:
                   $ref: "#/components/schemas/RunEvent"
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /api/runs/{run_id}/stream:
     parameters:
@@ -288,12 +326,20 @@ paths:
       operationId: streamRunEvents
       tags: [runs]
       parameters:
-        - name: Last-Event-ID
-          in: header
-          description: Last received run-event sequence.
+        - name: after_sequence
+          in: query
+          description: Initial cursor for browser EventSource clients.
           schema:
             type: integer
             minimum: 0
+            default: 0
+        - name: Last-Event-ID
+          in: header
+          description: Automatic reconnect cursor; the greater cursor wins.
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
       responses:
         "200":
           description: Persisted run events as Server-Sent Events.
@@ -308,6 +354,35 @@ paths:
                 type: string
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/runs/{run_id}/retry:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+      - $ref: "#/components/parameters/IdempotencyKey"
+    post:
+      operationId: retryRun
+      tags: [runs]
+      responses:
+        "202":
+          description: Existing run accepted for same-run failed-stage retry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRun"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "422":
+          $ref: "#/components/responses/ValidationError"
 
   /api/runs/{run_id}/artifacts:
     parameters:
@@ -326,6 +401,10 @@ paths:
                   $ref: "#/components/schemas/Artifact"
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
 components:
   parameters:
@@ -379,6 +458,24 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    InternalError:
+      description: The request failed without exposing internal details.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UpstreamError:
+      description: The configured runtime model provider failed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ServiceUnavailable:
+      description: The checkpointed runtime is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
 
   schemas:
     Health:
@@ -396,12 +493,37 @@ components:
       required: [code, message]
       properties:
         code:
-          type: string
+          $ref: "#/components/schemas/ErrorCode"
         message:
           type: string
         details:
           type: object
           additionalProperties: true
+
+    ErrorCode:
+      type: string
+      enum:
+        - NOT_FOUND
+        - VALIDATION_ERROR
+        - STATE_CONFLICT
+        - ACTIVE_RUN_EXISTS
+        - PLAN_NOT_AWAITING_APPROVAL
+        - APPROVAL_ALREADY_CLAIMED
+        - RUN_NOT_RETRYABLE
+        - RUNTIME_UNAVAILABLE
+        - INTERNAL_ERROR
+        - INVALID_OBJECTIVE_STATE
+        - AGENT_CONFIGURATION_INVALID
+        - OBJECTIVE_VALIDATION_FAILED
+        - PROMPT_VERSION_NOT_FOUND
+        - PLAN_GENERATION_FAILED
+        - PLAN_PERSISTENCE_FAILED
+        - PLAN_APPROVAL_FAILED
+        - SPECIALIST_EXECUTION_FAILED
+        - ARTIFACT_PERSISTENCE_FAILED
+        - BRIEF_SYNTHESIS_FAILED
+        - RUN_RECOVERY_FAILED
+        - RUNTIME_FAILED
 
     Company:
       type: object
@@ -721,6 +843,22 @@ components:
       type: string
       enum: [pending, awaiting_approval, running, completed, failed]
 
+    RunErrorCode:
+      type: string
+      enum:
+        - INVALID_OBJECTIVE_STATE
+        - AGENT_CONFIGURATION_INVALID
+        - OBJECTIVE_VALIDATION_FAILED
+        - PROMPT_VERSION_NOT_FOUND
+        - PLAN_GENERATION_FAILED
+        - PLAN_PERSISTENCE_FAILED
+        - PLAN_APPROVAL_FAILED
+        - SPECIALIST_EXECUTION_FAILED
+        - ARTIFACT_PERSISTENCE_FAILED
+        - BRIEF_SYNTHESIS_FAILED
+        - RUN_RECOVERY_FAILED
+        - RUNTIME_FAILED
+
     AgentRun:
       type: object
       additionalProperties: false
@@ -730,6 +868,7 @@ components:
         - objective_id
         - status
         - graph_version
+        - retryable
         - created_at
         - updated_at
       properties:
@@ -755,8 +894,12 @@ components:
           type: [string, "null"]
           format: date-time
         error_code:
-          type: [string, "null"]
-          maxLength: 80
+          oneOf:
+            - $ref: "#/components/schemas/RunErrorCode"
+            - type: "null"
+        retryable:
+          type: boolean
+          description: True only when same-run retry has a valid failed stage.
         created_at:
           type: string
           format: date-time

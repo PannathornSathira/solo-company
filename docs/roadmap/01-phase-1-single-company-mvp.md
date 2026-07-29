@@ -93,6 +93,10 @@ Rules:
 - specialist work is sequential;
 - graph tests use a deterministic fake model;
 - prompts live in versioned files, not inline in route handlers.
+- plan approval returns the claimed running run before specialist execution;
+- one in-process worker resumes claimed runs from PostgreSQL checkpoints;
+- manual retry resumes only the failed work item or executive brief under the
+  same run ID.
 
 ## Initial data model
 
@@ -180,10 +184,13 @@ GET    /api/work-items
 GET    /api/runs/{run_id}
 GET    /api/runs/{run_id}/events
 GET    /api/runs/{run_id}/stream
+POST   /api/runs/{run_id}/retry
 GET    /api/runs/{run_id}/artifacts
 ```
 
 Starting execution must use an idempotency key so double-clicking approval does not start duplicate runs.
+Each manual retry also uses a new idempotency key. Reusing an approval or retry
+key returns the original run without scheduling more work.
 
 ## Test strategy
 
@@ -203,6 +210,9 @@ Starting execution must use an idempotency key so double-clicking approval does 
 - plan approval starts one run only;
 - run and artifact persistence;
 - reconnecting SSE resumes after the last sequence number.
+- migration and runtime execution from an isolated empty PostgreSQL schema;
+- restart recovery after approval is committed but before execution resumes;
+- retry preserves completed work and produces no duplicate artifacts.
 
 ### End-to-end
 

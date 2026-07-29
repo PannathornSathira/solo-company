@@ -15,6 +15,7 @@ def create_artifact(
     work_item_id: UUID | None,
     draft: ArtifactDraft,
     company_id: UUID = DEFAULT_COMPANY_ID,
+    commit: bool = True,
 ) -> ArtifactModel:
     latest_version = (
         db.scalar(
@@ -41,8 +42,11 @@ def create_artifact(
         updated_at=now,
     )
     db.add(artifact)
-    db.commit()
-    db.refresh(artifact)
+    if commit:
+        db.commit()
+        db.refresh(artifact)
+    else:
+        db.flush()
     return artifact
 
 
@@ -61,4 +65,40 @@ def list_run_artifacts(
             )
             .order_by(ArtifactModel.created_at.asc(), ArtifactModel.version.asc())
         )
+    )
+
+
+def get_work_item_artifact(
+    db: Session,
+    *,
+    run_id: UUID,
+    work_item_id: UUID,
+    company_id: UUID = DEFAULT_COMPANY_ID,
+) -> ArtifactModel | None:
+    return db.scalar(
+        select(ArtifactModel)
+        .where(
+            ArtifactModel.run_id == run_id,
+            ArtifactModel.work_item_id == work_item_id,
+            ArtifactModel.company_id == company_id,
+        )
+        .order_by(ArtifactModel.version.desc())
+    )
+
+
+def get_executive_brief(
+    db: Session,
+    *,
+    run_id: UUID,
+    company_id: UUID = DEFAULT_COMPANY_ID,
+) -> ArtifactModel | None:
+    return db.scalar(
+        select(ArtifactModel)
+        .where(
+            ArtifactModel.run_id == run_id,
+            ArtifactModel.work_item_id.is_(None),
+            ArtifactModel.artifact_type == "executive_brief",
+            ArtifactModel.company_id == company_id,
+        )
+        .order_by(ArtifactModel.version.desc())
     )

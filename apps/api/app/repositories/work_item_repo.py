@@ -67,6 +67,8 @@ def update_work_item_status(
     work_item_id: UUID,
     new_status: WorkItemStatus,
     company_id: UUID = DEFAULT_COMPANY_ID,
+    *,
+    commit: bool = True,
 ) -> WorkItemModel:
     work_item = get_work_item(
         db, work_item_id=work_item_id, company_id=company_id
@@ -74,8 +76,11 @@ def update_work_item_status(
     validate_work_item_transition(work_item.status, new_status)
     work_item.status = new_status
     work_item.updated_at = utcnow()
-    db.commit()
-    db.refresh(work_item)
+    if commit:
+        db.commit()
+        db.refresh(work_item)
+    else:
+        db.flush()
     return work_item
 
 
@@ -135,6 +140,7 @@ def approve_work_items(
     *,
     objective_id: UUID,
     company_id: UUID = DEFAULT_COMPANY_ID,
+    commit: bool = True,
 ) -> list[WorkItemModel]:
     work_items = list_work_items(
         db, objective_id=objective_id, company_id=company_id
@@ -147,9 +153,12 @@ def approve_work_items(
     for work_item in work_items:
         work_item.status = "approved"
         work_item.updated_at = now
-    db.commit()
-    for work_item in work_items:
-        db.refresh(work_item)
+    if commit:
+        db.commit()
+        for work_item in work_items:
+            db.refresh(work_item)
+    else:
+        db.flush()
     return work_items
 
 
@@ -165,6 +174,40 @@ def get_next_approved_work_item(
             WorkItemModel.objective_id == objective_id,
             WorkItemModel.company_id == company_id,
             WorkItemModel.status == "approved",
+        )
+        .order_by(WorkItemModel.position.asc())
+    )
+
+
+def get_running_work_item(
+    db: Session,
+    *,
+    objective_id: UUID,
+    company_id: UUID = DEFAULT_COMPANY_ID,
+) -> WorkItemModel | None:
+    return db.scalar(
+        select(WorkItemModel)
+        .where(
+            WorkItemModel.objective_id == objective_id,
+            WorkItemModel.company_id == company_id,
+            WorkItemModel.status == "running",
+        )
+        .order_by(WorkItemModel.position.asc())
+    )
+
+
+def get_failed_work_item(
+    db: Session,
+    *,
+    objective_id: UUID,
+    company_id: UUID = DEFAULT_COMPANY_ID,
+) -> WorkItemModel | None:
+    return db.scalar(
+        select(WorkItemModel)
+        .where(
+            WorkItemModel.objective_id == objective_id,
+            WorkItemModel.company_id == company_id,
+            WorkItemModel.status == "failed",
         )
         .order_by(WorkItemModel.position.asc())
     )

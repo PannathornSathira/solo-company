@@ -7,6 +7,7 @@ import yaml
 from fastapi.openapi.models import OpenAPI
 from pydantic import ValidationError
 
+from app.contracts.common import ErrorCode, RunErrorCode
 from app.contracts.events import EventType, MAX_EVENT_PAYLOAD_BYTES, RunEvent
 from app.main import app
 
@@ -33,6 +34,15 @@ def test_openapi_and_runtime_event_types_match() -> None:
     assert set(document["components"]["schemas"]["EventType"]["enum"]) == set(
         get_args(EventType)
     )
+    assert set(document["components"]["schemas"]["ErrorCode"]["enum"]) == set(
+        get_args(ErrorCode)
+    )
+    assert set(
+        document["components"]["schemas"]["RunErrorCode"]["enum"]
+    ) == set(get_args(RunErrorCode))
+    assert "retryable" in document["components"]["schemas"]["AgentRun"][
+        "required"
+    ]
 
 
 def test_runtime_operations_match_approved_openapi_contract() -> None:
@@ -44,9 +54,23 @@ def test_runtime_operations_match_approved_openapi_contract() -> None:
         ("/api/objectives/{objective_id}/plan/approve", "post"),
         ("/api/runs/{run_id}", "get"),
         ("/api/runs/{run_id}/events", "get"),
+        ("/api/runs/{run_id}/stream", "get"),
+        ("/api/runs/{run_id}/retry", "post"),
         ("/api/runs/{run_id}/artifacts", "get"),
     }
     for path, method in operations:
         assert generated["paths"][path][method]["operationId"] == (
             approved["paths"][path][method]["operationId"]
         )
+
+    retry_responses = approved["paths"]["/api/runs/{run_id}/retry"][
+        "post"
+    ]["responses"]
+    assert "202" in retry_responses
+    stream_parameters = approved["paths"]["/api/runs/{run_id}/stream"][
+        "get"
+    ]["parameters"]
+    assert {parameter["name"] for parameter in stream_parameters} == {
+        "after_sequence",
+        "Last-Event-ID",
+    }

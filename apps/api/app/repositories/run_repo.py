@@ -24,7 +24,10 @@ def create_run(
         )
     )
     if existing is not None:
-        raise ConflictError("An active run already exists for this objective")
+        raise ConflictError(
+            "An active run already exists for this objective",
+            code="ACTIVE_RUN_EXISTS",
+        )
 
     now = utcnow()
     run = AgentRunModel(
@@ -41,7 +44,14 @@ def create_run(
         updated_at=now,
     )
     db.add(run)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise ConflictError(
+            "An active run already exists for this objective",
+            code="ACTIVE_RUN_EXISTS",
+        ) from None
     db.refresh(run)
     return run
 
@@ -50,13 +60,16 @@ def get_run(
     db: Session,
     run_id: UUID,
     company_id: UUID = DEFAULT_COMPANY_ID,
+    *,
+    for_update: bool = False,
 ) -> AgentRunModel:
-    run = db.scalar(
-        select(AgentRunModel).where(
+    query = select(AgentRunModel).where(
             AgentRunModel.id == run_id,
             AgentRunModel.company_id == company_id,
         )
-    )
+    if for_update:
+        query = query.with_for_update()
+    run = db.scalar(query)
     if run is None:
         raise NotFoundError("Run not found")
     return run
@@ -82,7 +95,10 @@ def get_awaiting_approval_run(
         query = query.with_for_update()
     run = db.scalar(query)
     if run is None:
-        raise ConflictError("Objective has no plan awaiting approval")
+        raise ConflictError(
+            "Objective has no plan awaiting approval",
+            code="PLAN_NOT_AWAITING_APPROVAL",
+        )
     return run
 
 
@@ -108,6 +124,7 @@ def claim_approval(
     objective_id: UUID,
     idempotency_key: str,
     company_id: UUID = DEFAULT_COMPANY_ID,
+    commit: bool = True,
 ) -> AgentRunModel:
     existing = get_run_by_idempotency_key(
         db,
@@ -125,24 +142,33 @@ def claim_approval(
         for_update=True,
     )
     if run.approval_idempotency_key is not None:
-        raise ConflictError("Plan approval has already been claimed")
+        raise ConflictError(
+            "Plan approval has already been claimed",
+            code="APPROVAL_ALREADY_CLAIMED",
+        )
 
     run.approval_idempotency_key = idempotency_key
     run.updated_at = utcnow()
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        existing = get_run_by_idempotency_key(
-            db,
-            objective_id=objective_id,
-            idempotency_key=idempotency_key,
-            company_id=company_id,
-        )
-        if existing is not None:
-            return existing
-        raise ConflictError("Plan approval has already been claimed") from None
-    db.refresh(run)
+    if commit:
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            existing = get_run_by_idempotency_key(
+                db,
+                objective_id=objective_id,
+                idempotency_key=idempotency_key,
+                company_id=company_id,
+            )
+            if existing is not None:
+                return existing
+            raise ConflictError(
+                "Plan approval has already been claimed",
+                code="APPROVAL_ALREADY_CLAIMED",
+            ) from None
+        db.refresh(run)
+    else:
+        db.flush()
     return run
 
 
@@ -153,6 +179,7 @@ def update_run_status(
     *,
     error_code: str | None = None,
     company_id: UUID = DEFAULT_COMPANY_ID,
+    commit: bool = True,
 ) -> AgentRunModel:
     run = get_run(db, run_id=run_id, company_id=company_id)
     now = utcnow()
@@ -160,9 +187,30 @@ def update_run_status(
     run.error_code = error_code
     if status == "running" and run.started_at is None:
         run.started_at = now
+    if status == "running":
+        run.finished_at = None
     if status in {"completed", "failed"}:
         run.finished_at = now
     run.updated_at = now
-    db.commit()
-    db.refresh(run)
+    if commit:
+        db.commit()
+        db.refresh(run)
+    else:
+        db.flush()
     return run
+
+
+def list_recoverable_runs(
+    db: Session,
+    company_id: UUID = DEFAULT_COMPANY_ID,
+) -> list[AgentRunModel]:
+    return list(
+        db.scalars(
+            select(AgentRunModel)
+            .where(
+                AgentRunModel.company_id == company_id,
+                AgentRunModel.status.in_(("pending", "running")),
+            )
+            .order_by(AgentRunModel.created_at.asc())
+        )
+    )

@@ -11,8 +11,9 @@ from app.contracts.common import Error, Health
 from app.config import get_settings
 from app.db.session import get_session_factory
 from app.repositories.agent_repo import seed_default_agents_if_empty
-from app.repositories.exceptions import ConflictError, NotFoundError
+from app.repositories.exceptions import ApplicationError
 from app.routers import agents, company, objectives, runs
+from app.runtime.coordinator import RuntimeCoordinator
 from app.runtime.factory import create_production_runtime
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     runtime_context = None
     created_runtime = False
+    runtime_coordinator = None
+    created_coordinator = False
     try:
         factory = get_session_factory()
         with factory() as db:
@@ -32,6 +35,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
             app.state.runtime_service = runtime_service
             created_runtime = True
+        if getattr(app.state, "runtime_coordinator", None) is None:
+            runtime_coordinator = RuntimeCoordinator(
+                app.state.runtime_service
+            )
+            app.state.runtime_coordinator = runtime_coordinator
+            created_coordinator = True
+            runtime_coordinator.recover_incomplete_runs()
     except Exception as exc:
         logger.warning(
             "Could not initialize database-backed runtime "
@@ -41,6 +51,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         yield
     finally:
+        if created_coordinator and runtime_coordinator is not None:
+            runtime_coordinator.shutdown()
+            del app.state.runtime_coordinator
         if created_runtime:
             del app.state.runtime_service
         if runtime_context is not None:
@@ -55,20 +68,13 @@ app = FastAPI(
 )
 
 
-@app.exception_handler(NotFoundError)
-def not_found_handler(request: Request, exc: NotFoundError) -> JSONResponse:
+@app.exception_handler(ApplicationError)
+def application_error_handler(
+    request: Request, exc: ApplicationError
+) -> JSONResponse:
     error_data = Error(code=exc.code, message=exc.message, details={})
     return JSONResponse(
-        status_code=status.HTTP_404_NOT_FOUND,
-        content=error_data.model_dump(mode="json"),
-    )
-
-
-@app.exception_handler(ConflictError)
-def conflict_handler(request: Request, exc: ConflictError) -> JSONResponse:
-    error_data = Error(code=exc.code, message=exc.message, details={})
-    return JSONResponse(
-        status_code=status.HTTP_409_CONFLICT,
+        status_code=exc.status_code,
         content=error_data.model_dump(mode="json"),
     )
 
@@ -84,6 +90,26 @@ def validation_exception_handler(
     )
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content=error_data.model_dump(mode="json"),
+    )
+
+
+@app.exception_handler(Exception)
+def unexpected_exception_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    logger.exception(
+        "Unhandled API error method=%s path=%s",
+        request.method,
+        request.url.path,
+    )
+    error_data = Error(
+        code="INTERNAL_ERROR",
+        message="An unexpected internal error occurred",
+        details={},
+    )
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content=error_data.model_dump(mode="json"),
     )
 

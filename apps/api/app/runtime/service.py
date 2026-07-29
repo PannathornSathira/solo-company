@@ -1,4 +1,6 @@
 from collections.abc import Callable
+from dataclasses import dataclass
+import logging
 from typing import Any, Literal, TypedDict
 from uuid import UUID
 
@@ -16,10 +18,15 @@ from app.repositories import (
     company_repo,
     event_repo,
     objective_repo,
+    retry_repo,
     run_repo,
     work_item_repo,
 )
-from app.repositories.exceptions import ConflictError
+from app.repositories.exceptions import (
+    ConflictError,
+    InternalError,
+    UpstreamError,
+)
 from app.runtime.contracts import ArtifactDraft, PlanDraft
 from app.runtime.model_adapters import ModelAdapter, ModelAdapterError
 from app.runtime.prompts import (
@@ -29,6 +36,13 @@ from app.runtime.prompts import (
 )
 
 SPECIALIST_SLUGS = ("marketing-specialist", "operations-manager")
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class DispatchResult:
+    run: AgentRun
+    should_schedule: bool
 
 
 class RuntimeState(TypedDict, total=False):
@@ -175,9 +189,22 @@ class RuntimeService:
                 db, run_id, company_id=company_id
             )
             if persisted_run.status == "failed":
+                error_code = (
+                    persisted_run.error_code or "PLAN_GENERATION_FAILED"
+                )
+                if error_code == "PLAN_GENERATION_FAILED":
+                    raise UpstreamError(
+                        "Plan generation failed",
+                        code=error_code,
+                    )
+                if error_code == "PLAN_PERSISTENCE_FAILED":
+                    raise InternalError(
+                        "Plan persistence failed",
+                        code=error_code,
+                    )
                 raise ConflictError(
                     "Plan generation failed",
-                    code=persisted_run.error_code or "PLAN_GENERATION_FAILED",
+                    code=error_code,
                 )
             if persisted_run.status != "awaiting_approval":
                 raise ConflictError("Plan did not reach owner approval")
@@ -205,31 +232,339 @@ class RuntimeService:
 
     def approve_plan(
         self, objective_id: UUID, idempotency_key: str
-    ) -> AgentRun:
+    ) -> DispatchResult:
         with self.session_factory() as db:
-            existing = run_repo.get_run_by_idempotency_key(
-                db,
-                objective_id=objective_id,
-                idempotency_key=idempotency_key,
+            try:
+                with db.begin():
+                    existing = run_repo.get_run_by_idempotency_key(
+                        db,
+                        objective_id=objective_id,
+                        idempotency_key=idempotency_key,
+                    )
+                    if existing is not None:
+                        run = existing
+                        should_schedule = False
+                    else:
+                        run = run_repo.claim_approval(
+                            db,
+                            objective_id=objective_id,
+                            idempotency_key=idempotency_key,
+                            commit=False,
+                        )
+                        work_item_repo.approve_work_items(
+                            db,
+                            objective_id=objective_id,
+                            company_id=run.company_id,
+                            commit=False,
+                        )
+                        objective_repo.update_objective_status(
+                            db,
+                            objective_id,
+                            "approved",
+                            company_id=run.company_id,
+                            commit=False,
+                        )
+                        objective_repo.update_objective_status(
+                            db,
+                            objective_id,
+                            "running",
+                            company_id=run.company_id,
+                            commit=False,
+                        )
+                        run_repo.update_run_status(
+                            db,
+                            run.id,
+                            "running",
+                            company_id=run.company_id,
+                            commit=False,
+                        )
+                        event_repo.append_event(
+                            db,
+                            run_id=run.id,
+                            event_type="plan.approved",
+                            summary=(
+                                "Owner approved the sequential work plan"
+                            ),
+                            payload_json={"approved_by": "owner"},
+                            company_id=run.company_id,
+                            commit=False,
+                        )
+                        should_schedule = True
+                db.refresh(run)
+            except ConflictError:
+                with self.session_factory() as lookup_db:
+                    existing = run_repo.get_run_by_idempotency_key(
+                        lookup_db,
+                        objective_id=objective_id,
+                        idempotency_key=idempotency_key,
+                    )
+                    if existing is not None:
+                        return DispatchResult(
+                            run=AgentRun.from_record(existing),
+                            should_schedule=False,
+                        )
+                raise
+            except Exception as exc:
+                raise InternalError(
+                    "Plan approval could not be persisted",
+                    code="PLAN_APPROVAL_FAILED",
+                ) from exc
+            return DispatchResult(
+                run=AgentRun.from_record(run),
+                should_schedule=should_schedule,
             )
-            if existing is not None:
-                return AgentRun.model_validate(existing)
-            run = run_repo.claim_approval(
-                db,
-                objective_id=objective_id,
-                idempotency_key=idempotency_key,
-            )
-            company_id = run.company_id
 
-        self.graph.invoke(
-            Command(resume={"action": "approve"}),
-            self._config(run.id),
-        )
+    def retry_run(
+        self, run_id: UUID, idempotency_key: str
+    ) -> DispatchResult:
         with self.session_factory() as db:
-            persisted_run = run_repo.get_run(
-                db, run.id, company_id=company_id
+            with db.begin():
+                existing_request = retry_repo.get_retry_request_by_key(
+                    db,
+                    run_id=run_id,
+                    idempotency_key=idempotency_key,
+                )
+                if existing_request is not None:
+                    run = run_repo.get_run(db, run_id)
+                    should_schedule = False
+                else:
+                    run = run_repo.get_run(db, run_id, for_update=True)
+                    existing_request = retry_repo.get_retry_request_by_key(
+                        db,
+                        run_id=run_id,
+                        idempotency_key=idempotency_key,
+                        company_id=run.company_id,
+                    )
+                    if existing_request is not None:
+                        should_schedule = False
+                    elif run.status != "failed" or run.started_at is None:
+                        raise ConflictError(
+                            "Run is not retryable in its current state",
+                            code="RUN_NOT_RETRYABLE",
+                        )
+                    else:
+                        failed_item = work_item_repo.get_failed_work_item(
+                            db,
+                            objective_id=run.objective_id,
+                            company_id=run.company_id,
+                        )
+                        if failed_item is not None:
+                            retry_target = "execute_next_work_item"
+                            work_item_repo.update_work_item_status(
+                                db,
+                                failed_item.id,
+                                "approved",
+                                company_id=run.company_id,
+                                commit=False,
+                            )
+                            work_item_id = failed_item.id
+                            summary = (
+                                "Owner requested retry: "
+                                f"{failed_item.title}"
+                            )
+                        elif run.error_code in {
+                            "BRIEF_SYNTHESIS_FAILED",
+                            "PROMPT_VERSION_NOT_FOUND",
+                        }:
+                            retry_target = "synthesize_executive_brief"
+                            work_item_id = None
+                            summary = (
+                                "Owner requested retry of the "
+                                "executive brief"
+                            )
+                        else:
+                            raise ConflictError(
+                                "Run failure does not have a "
+                                "retryable stage",
+                                code="RUN_NOT_RETRYABLE",
+                            )
+
+                        retry_repo.create_retry_request(
+                            db,
+                            run_id=run.id,
+                            idempotency_key=idempotency_key,
+                            retry_target=retry_target,
+                            work_item_id=work_item_id,
+                            company_id=run.company_id,
+                        )
+                        previous_error_code = run.error_code
+                        objective_repo.update_objective_status(
+                            db,
+                            run.objective_id,
+                            "running",
+                            company_id=run.company_id,
+                            commit=False,
+                        )
+                        run_repo.update_run_status(
+                            db,
+                            run.id,
+                            "running",
+                            error_code=None,
+                            company_id=run.company_id,
+                            commit=False,
+                        )
+                        event_repo.append_event(
+                            db,
+                            run_id=run.id,
+                            event_type="work.progress",
+                            summary=summary,
+                            payload_json={
+                                "retry_target": retry_target,
+                                "work_item_id": (
+                                    str(work_item_id)
+                                    if work_item_id is not None
+                                    else None
+                                ),
+                                "previous_error_code": (
+                                    previous_error_code
+                                ),
+                            },
+                            company_id=run.company_id,
+                            commit=False,
+                        )
+                        should_schedule = True
+            db.refresh(run)
+            return DispatchResult(
+                run=AgentRun.from_record(run),
+                should_schedule=should_schedule,
             )
-            return AgentRun.model_validate(persisted_run)
+
+    def resume_run(self, run_id: UUID) -> None:
+        with self.session_factory() as db:
+            run = run_repo.get_run(db, run_id)
+            company_id = run.company_id
+            status = run.status
+            retry_request = retry_repo.get_latest_retry_request(
+                db,
+                run_id=run_id,
+                company_id=company_id,
+            )
+
+        if status not in {"pending", "running"}:
+            return
+
+        config = self._config(run_id)
+        snapshot = self.graph.get_state(config)
+        try:
+            if not snapshot.values:
+                self.graph.invoke(
+                    {
+                        "company_id": str(company_id),
+                        "objective_id": str(run.objective_id),
+                        "run_id": str(run_id),
+                        "revision_feedback": "",
+                        "pending_artifact": None,
+                        "current_work_item_id": None,
+                        "error_code": None,
+                    },
+                    config,
+                )
+            elif snapshot.next:
+                waiting_for_approval = (
+                    snapshot.next == ("wait_for_plan_approval",)
+                    and any(task.interrupts for task in snapshot.tasks)
+                )
+                if status == "running" and waiting_for_approval:
+                    self.graph.invoke(
+                        Command(
+                            resume={"action": "approved_persisted"}
+                        ),
+                        config,
+                    )
+                else:
+                    self.graph.invoke(None, config)
+            elif status == "running" and retry_request is not None:
+                self.graph.invoke(
+                    Command(
+                        update={
+                            "error_code": None,
+                            "current_work_item_id": None,
+                            "pending_artifact": None,
+                        },
+                        goto=retry_request.retry_target,
+                    ),
+                    config,
+                )
+            else:
+                raise RuntimeError(
+                    "Recoverable database state has no checkpoint route"
+                )
+        except Exception:
+            logger.exception(
+                "Runtime recovery failed for run_id=%s", run_id
+            )
+            self._mark_recovery_failed(run_id, company_id)
+
+    def get_run(self, run_id: UUID) -> AgentRun:
+        with self.session_factory() as db:
+            return AgentRun.from_record(run_repo.get_run(db, run_id))
+
+    def list_recoverable_run_ids(self) -> list[UUID]:
+        with self.session_factory() as db:
+            return [run.id for run in run_repo.list_recoverable_runs(db)]
+
+    def _mark_recovery_failed(
+        self, run_id: UUID, company_id: UUID
+    ) -> None:
+        try:
+            with self.session_factory() as db:
+                with db.begin():
+                    run = run_repo.get_run(
+                        db, run_id, company_id=company_id
+                    )
+                    if run.status not in {"pending", "running"}:
+                        return
+                    objective = objective_repo.get_objective(
+                        db,
+                        run.objective_id,
+                        company_id=company_id,
+                    )
+                    if objective.status != "failed":
+                        objective_repo.update_objective_status(
+                            db,
+                            objective.id,
+                            "failed",
+                            company_id=company_id,
+                            commit=False,
+                        )
+                    run_repo.update_run_status(
+                        db,
+                        run_id,
+                        "failed",
+                        error_code="RUN_RECOVERY_FAILED",
+                        company_id=company_id,
+                        commit=False,
+                    )
+                    last_failure = event_repo.latest_event_sequence(
+                        db,
+                        run_id=run_id,
+                        event_type="run.failed",
+                        company_id=company_id,
+                    )
+                    last_retry = event_repo.latest_event_sequence(
+                        db,
+                        run_id=run_id,
+                        event_type="work.progress",
+                        company_id=company_id,
+                    )
+                    if last_failure == 0 or last_failure < last_retry:
+                        event_repo.append_event(
+                            db,
+                            run_id=run_id,
+                            event_type="run.failed",
+                            summary=(
+                                "Run stopped because checkpoint recovery failed"
+                            ),
+                            payload_json={
+                                "error_code": "RUN_RECOVERY_FAILED"
+                            },
+                            company_id=company_id,
+                            commit=False,
+                        )
+        except Exception:
+            logger.exception(
+                "Could not persist recovery failure for run_id=%s", run_id
+            )
 
     @staticmethod
     def _load_plan(db: Session, objective_id: UUID) -> Plan:
@@ -278,6 +613,33 @@ class RuntimeService:
         run_id = self._uuid(state, "run_id")
         try:
             with self.session_factory() as db:
+                persisted_run = run_repo.get_run(
+                    db, run_id, company_id=company_id
+                )
+                existing_items = work_item_repo.list_work_items(
+                    db,
+                    objective_id=objective_id,
+                    company_id=company_id,
+                )
+                if (
+                    persisted_run.status == "awaiting_approval"
+                    and 2 <= len(existing_items) <= 5
+                    and all(
+                        item.status == "proposed"
+                        for item in existing_items
+                    )
+                    and event_repo.event_exists(
+                        db,
+                        run_id=run_id,
+                        event_type="plan.proposed",
+                        company_id=company_id,
+                    )
+                ):
+                    return {
+                        "error_code": None,
+                        "decision": "",
+                        "pending_artifact": None,
+                    }
                 company = company_repo.get_company(db, company_id)
                 objective = objective_repo.get_objective(
                     db, objective_id, company_id=company_id
@@ -373,7 +735,7 @@ class RuntimeService:
             }
         )
         if not isinstance(response, dict):
-            return {"error_code": "INVALID_APPROVAL_DECISION"}
+            return {"error_code": "RUNTIME_FAILED"}
         action = response.get("action")
         company_id = self._uuid(state, "company_id")
         objective_id = self._uuid(state, "objective_id")
@@ -385,68 +747,76 @@ class RuntimeService:
                 or not feedback.strip()
                 or len(feedback) > 4000
             ):
-                return {"error_code": "INVALID_REVISION_FEEDBACK"}
+                return {"error_code": "RUNTIME_FAILED"}
             with self.session_factory() as db:
-                event_repo.append_event(
+                latest_plan = event_repo.latest_event_sequence(
+                    db,
+                    run_id=run_id,
+                    event_type="plan.proposed",
+                    company_id=company_id,
+                )
+                latest_revision = event_repo.latest_event_sequence(
                     db,
                     run_id=run_id,
                     event_type="plan.revision_requested",
-                    summary="Owner requested a plan revision",
-                    payload_json={"feedback_length": len(feedback)},
                     company_id=company_id,
                 )
-                objective_repo.update_objective_status(
-                    db, objective_id, "planning", company_id=company_id
-                )
-                run_repo.update_run_status(
-                    db,
-                    run_id,
-                    "pending",
-                    company_id=company_id,
-                )
+                if latest_revision <= latest_plan:
+                    event_repo.append_event(
+                        db,
+                        run_id=run_id,
+                        event_type="plan.revision_requested",
+                        summary="Owner requested a plan revision",
+                        payload_json={
+                            "feedback_length": len(feedback)
+                        },
+                        company_id=company_id,
+                        commit=False,
+                    )
+                    objective_repo.update_objective_status(
+                        db,
+                        objective_id,
+                        "planning",
+                        company_id=company_id,
+                        commit=False,
+                    )
+                    run_repo.update_run_status(
+                        db,
+                        run_id,
+                        "pending",
+                        company_id=company_id,
+                        commit=False,
+                    )
+                    db.commit()
             return {
                 "decision": "revise",
                 "revision_feedback": feedback.strip(),
                 "error_code": None,
             }
-        if action == "approve":
-            try:
-                with self.session_factory() as db:
-                    work_item_repo.approve_work_items(
-                        db,
-                        objective_id=objective_id,
-                        company_id=company_id,
-                    )
-                    objective_repo.update_objective_status(
-                        db,
-                        objective_id,
+        if action in {"approve", "approved_persisted"}:
+            with self.session_factory() as db:
+                run = run_repo.get_run(
+                    db, run_id, company_id=company_id
+                )
+                if run.status != "running":
+                    return {"error_code": "PLAN_APPROVAL_FAILED"}
+                work_items = work_item_repo.list_work_items(
+                    db,
+                    objective_id=objective_id,
+                    company_id=company_id,
+                )
+                if not work_items or any(
+                    item.status not in {
                         "approved",
-                        company_id=company_id,
-                    )
-                    objective_repo.update_objective_status(
-                        db,
-                        objective_id,
                         "running",
-                        company_id=company_id,
-                    )
-                    run_repo.update_run_status(
-                        db,
-                        run_id,
-                        "running",
-                        company_id=company_id,
-                    )
-                    event_repo.append_event(
-                        db,
-                        run_id=run_id,
-                        event_type="plan.approved",
-                        summary="Owner approved the sequential work plan",
-                        payload_json={"approved_by": "owner"},
-                        company_id=company_id,
-                    )
-            except Exception:
-                return {"error_code": "PLAN_APPROVAL_FAILED"}
+                        "review",
+                        "done",
+                    }
+                    for item in work_items
+                ):
+                    return {"error_code": "PLAN_APPROVAL_FAILED"}
             return {"decision": "approve", "error_code": None}
-        return {"error_code": "INVALID_APPROVAL_DECISION"}
+        return {"error_code": "RUNTIME_FAILED"}
 
     def _execute_next_work_item(
         self, state: RuntimeState
@@ -455,7 +825,11 @@ class RuntimeService:
         objective_id = self._uuid(state, "objective_id")
         run_id = self._uuid(state, "run_id")
         with self.session_factory() as db:
-            work_item = work_item_repo.get_next_approved_work_item(
+            work_item = work_item_repo.get_running_work_item(
+                db,
+                objective_id=objective_id,
+                company_id=company_id,
+            ) or work_item_repo.get_next_approved_work_item(
                 db,
                 objective_id=objective_id,
                 company_id=company_id,
@@ -466,12 +840,46 @@ class RuntimeService:
                     "pending_artifact": None,
                     "error_code": None,
                 }
-            work_item_repo.update_work_item_status(
-                db,
-                work_item.id,
-                "running",
-                company_id=company_id,
-            )
+            if work_item.status == "approved":
+                work_item_repo.update_work_item_status(
+                    db,
+                    work_item.id,
+                    "running",
+                    company_id=company_id,
+                    commit=False,
+                )
+                last_started = event_repo.latest_event_sequence(
+                    db,
+                    run_id=run_id,
+                    event_type="work.started",
+                    company_id=company_id,
+                    work_item_id=work_item.id,
+                )
+                last_retry = event_repo.latest_event_sequence(
+                    db,
+                    run_id=run_id,
+                    event_type="work.progress",
+                    company_id=company_id,
+                )
+                if last_started == 0 or last_started < last_retry:
+                    event_repo.append_event(
+                        db,
+                        run_id=run_id,
+                        event_type="work.started",
+                        summary=(
+                            f"Started work item: {work_item.title}"
+                        ),
+                        payload_json={
+                            "work_item_id": str(work_item.id),
+                            "assigned_agent_id": str(
+                                work_item.assigned_agent_id
+                            ),
+                            "position": work_item.position,
+                        },
+                        company_id=company_id,
+                        commit=False,
+                    )
+                db.commit()
             agent = agent_repo.get_agent(
                 db, work_item.assigned_agent_id, company_id=company_id
             )
@@ -481,18 +889,6 @@ class RuntimeService:
             company = company_repo.get_company(db, company_id)
             prior_artifacts = artifact_repo.list_run_artifacts(
                 db, run_id=run_id, company_id=company_id
-            )
-            event_repo.append_event(
-                db,
-                run_id=run_id,
-                event_type="work.started",
-                summary=f"{agent.name} started: {work_item.title}",
-                payload_json={
-                    "work_item_id": str(work_item.id),
-                    "assigned_agent_id": str(agent.id),
-                    "position": work_item.position,
-                },
-                company_id=company_id,
             )
             try:
                 prompt = self.prompt_loader.render(
@@ -570,39 +966,77 @@ class RuntimeService:
                 work_item = work_item_repo.get_work_item(
                     db, work_item_id, company_id=company_id
                 )
-                artifact = artifact_repo.create_artifact(
+                artifact = artifact_repo.get_work_item_artifact(
                     db,
                     run_id=run_id,
                     work_item_id=work_item_id,
-                    draft=draft,
                     company_id=company_id,
                 )
-                event_repo.append_event(
+                if work_item.status == "done" and artifact is not None:
+                    return {
+                        "current_work_item_id": None,
+                        "pending_artifact": None,
+                        "error_code": None,
+                    }
+                if artifact is None:
+                    artifact = artifact_repo.create_artifact(
+                        db,
+                        run_id=run_id,
+                        work_item_id=work_item_id,
+                        draft=draft,
+                        company_id=company_id,
+                        commit=False,
+                    )
+                if not event_repo.event_exists(
                     db,
                     run_id=run_id,
                     event_type="artifact.created",
-                    summary=f"Created artifact: {artifact.title}",
-                    payload_json={
-                        "artifact_id": str(artifact.id),
-                        "work_item_id": str(work_item_id),
-                        "artifact_type": artifact.artifact_type,
-                    },
                     company_id=company_id,
-                )
-                work_item_repo.update_work_item_status(
-                    db, work_item_id, "done", company_id=company_id
-                )
-                event_repo.append_event(
+                    work_item_id=work_item_id,
+                ):
+                    event_repo.append_event(
+                        db,
+                        run_id=run_id,
+                        event_type="artifact.created",
+                        summary=f"Created artifact: {artifact.title}",
+                        payload_json={
+                            "artifact_id": str(artifact.id),
+                            "work_item_id": str(work_item_id),
+                            "artifact_type": artifact.artifact_type,
+                        },
+                        company_id=company_id,
+                        commit=False,
+                    )
+                if work_item.status != "done":
+                    work_item_repo.update_work_item_status(
+                        db,
+                        work_item_id,
+                        "done",
+                        company_id=company_id,
+                        commit=False,
+                    )
+                if not event_repo.event_exists(
                     db,
                     run_id=run_id,
                     event_type="work.completed",
-                    summary=f"Completed work item: {work_item.title}",
-                    payload_json={
-                        "work_item_id": str(work_item_id),
-                        "artifact_id": str(artifact.id),
-                    },
                     company_id=company_id,
-                )
+                    work_item_id=work_item_id,
+                ):
+                    event_repo.append_event(
+                        db,
+                        run_id=run_id,
+                        event_type="work.completed",
+                        summary=(
+                            f"Completed work item: {work_item.title}"
+                        ),
+                        payload_json={
+                            "work_item_id": str(work_item_id),
+                            "artifact_id": str(artifact.id),
+                        },
+                        company_id=company_id,
+                        commit=False,
+                    )
+                db.commit()
         except Exception:
             with self.session_factory() as db:
                 return self._mark_work_failed(
@@ -626,6 +1060,13 @@ class RuntimeService:
         run_id = self._uuid(state, "run_id")
         try:
             with self.session_factory() as db:
+                existing_brief = artifact_repo.get_executive_brief(
+                    db,
+                    run_id=run_id,
+                    company_id=company_id,
+                )
+                if existing_brief is not None:
+                    return {"error_code": None}
                 company = company_repo.get_company(db, company_id)
                 objective = objective_repo.get_objective(
                     db, objective_id, company_id=company_id
@@ -671,6 +1112,7 @@ class RuntimeService:
                         content_markdown=brief.content_markdown,
                     ),
                     company_id=company_id,
+                    commit=False,
                 )
                 event_repo.append_event(
                     db,
@@ -679,7 +1121,9 @@ class RuntimeService:
                     summary=f"Created executive brief: {artifact.title}",
                     payload_json={"artifact_id": str(artifact.id)},
                     company_id=company_id,
+                    commit=False,
                 )
+                db.commit()
         except PromptNotFoundError:
             return {"error_code": "PROMPT_VERSION_NOT_FOUND"}
         except (PromptRenderError, ModelAdapterError):
@@ -693,20 +1137,39 @@ class RuntimeService:
         objective_id = self._uuid(state, "objective_id")
         run_id = self._uuid(state, "run_id")
         with self.session_factory() as db:
+            run = run_repo.get_run(db, run_id, company_id=company_id)
+            if run.status == "completed":
+                return {}
             objective_repo.update_objective_status(
-                db, objective_id, "completed", company_id=company_id
+                db,
+                objective_id,
+                "completed",
+                company_id=company_id,
+                commit=False,
             )
             run_repo.update_run_status(
-                db, run_id, "completed", company_id=company_id
+                db,
+                run_id,
+                "completed",
+                company_id=company_id,
+                commit=False,
             )
-            event_repo.append_event(
+            if not event_repo.event_exists(
                 db,
                 run_id=run_id,
                 event_type="run.completed",
-                summary="Completed the approved objective run",
-                payload_json={"objective_id": str(objective_id)},
                 company_id=company_id,
-            )
+            ):
+                event_repo.append_event(
+                    db,
+                    run_id=run_id,
+                    event_type="run.completed",
+                    summary="Completed the approved objective run",
+                    payload_json={"objective_id": str(objective_id)},
+                    company_id=company_id,
+                    commit=False,
+                )
+            db.commit()
         return {}
 
     def _fail(self, state: RuntimeState) -> RuntimeState:
@@ -715,12 +1178,31 @@ class RuntimeService:
         run_id = self._uuid(state, "run_id")
         error_code = state.get("error_code") or "RUNTIME_FAILED"
         with self.session_factory() as db:
+            run = run_repo.get_run(db, run_id, company_id=company_id)
+            last_failure = event_repo.latest_event_sequence(
+                db,
+                run_id=run_id,
+                event_type="run.failed",
+                company_id=company_id,
+            )
+            last_retry = event_repo.latest_event_sequence(
+                db,
+                run_id=run_id,
+                event_type="work.progress",
+                company_id=company_id,
+            )
+            if run.status == "failed" and last_failure > last_retry:
+                return {}
             objective = objective_repo.get_objective(
                 db, objective_id, company_id=company_id
             )
             if objective.status != "failed":
                 objective_repo.update_objective_status(
-                    db, objective_id, "failed", company_id=company_id
+                    db,
+                    objective_id,
+                    "failed",
+                    company_id=company_id,
+                    commit=False,
                 )
             run_repo.update_run_status(
                 db,
@@ -728,15 +1210,19 @@ class RuntimeService:
                 "failed",
                 error_code=error_code,
                 company_id=company_id,
+                commit=False,
             )
-            event_repo.append_event(
-                db,
-                run_id=run_id,
-                event_type="run.failed",
-                summary=f"Run stopped with error code {error_code}",
-                payload_json={"error_code": error_code},
-                company_id=company_id,
-            )
+            if last_failure == 0 or last_failure < last_retry:
+                event_repo.append_event(
+                    db,
+                    run_id=run_id,
+                    event_type="run.failed",
+                    summary=f"Run stopped with error code {error_code}",
+                    payload_json={"error_code": error_code},
+                    company_id=company_id,
+                    commit=False,
+                )
+            db.commit()
         return {}
 
     def _mark_work_failed(
@@ -752,19 +1238,39 @@ class RuntimeService:
         )
         if work_item.status != "failed":
             work_item_repo.update_work_item_status(
-                db, work_item_id, "failed", company_id=company_id
+                db,
+                work_item_id,
+                "failed",
+                company_id=company_id,
+                commit=False,
             )
-            event_repo.append_event(
+            last_failure = event_repo.latest_event_sequence(
                 db,
                 run_id=run_id,
                 event_type="work.failed",
-                summary=f"Work item failed: {work_item.title}",
-                payload_json={
-                    "work_item_id": str(work_item_id),
-                    "error_code": error_code,
-                },
+                company_id=company_id,
+                work_item_id=work_item_id,
+            )
+            last_retry = event_repo.latest_event_sequence(
+                db,
+                run_id=run_id,
+                event_type="work.progress",
                 company_id=company_id,
             )
+            if last_failure == 0 or last_failure < last_retry:
+                event_repo.append_event(
+                    db,
+                    run_id=run_id,
+                    event_type="work.failed",
+                    summary=f"Work item failed: {work_item.title}",
+                    payload_json={
+                        "work_item_id": str(work_item_id),
+                        "error_code": error_code,
+                    },
+                    company_id=company_id,
+                    commit=False,
+                )
+            db.commit()
         return {
             "current_work_item_id": str(work_item_id),
             "pending_artifact": None,

@@ -1,3 +1,4 @@
+from time import monotonic, sleep
 from uuid import UUID
 
 from fastapi.testclient import TestClient
@@ -8,6 +9,7 @@ from app.db import session as db_session_module
 from app.main import app
 from app.repositories import artifact_repo, event_repo, work_item_repo
 from app.runtime.model_adapters import FakeModelAdapter
+from app.runtime.coordinator import RuntimeCoordinator
 from app.runtime.service import RuntimeService
 
 
@@ -29,6 +31,35 @@ def event_types(client: TestClient, run_id: str) -> list[str]:
     response = client.get(f"/api/runs/{run_id}/events")
     assert response.status_code == 200
     return [event["event_type"] for event in response.json()]
+
+
+def wait_for_run(
+    client: TestClient,
+    run_id: str,
+    expected_status: str,
+    timeout: float = 2.0,
+) -> dict:
+    deadline = monotonic() + timeout
+    while monotonic() < deadline:
+        response = client.get(f"/api/runs/{run_id}")
+        assert response.status_code == 200
+        run = response.json()
+        if run["status"] == expected_status:
+            return run
+        sleep(0.01)
+    raise AssertionError(
+        f"Run {run_id} did not reach {expected_status}"
+    )
+
+
+def install_runtime(runtime: RuntimeService) -> RuntimeCoordinator:
+    current = getattr(app.state, "runtime_coordinator", None)
+    if current is not None:
+        current.shutdown()
+    coordinator = RuntimeCoordinator(runtime)
+    app.state.runtime_service = runtime
+    app.state.runtime_coordinator = coordinator
+    return coordinator
 
 
 def test_create_revise_approve_and_reload_runtime(
@@ -61,7 +92,8 @@ def test_create_revise_approve_and_reload_runtime(
     )
     assert approve_response.status_code == 201
     run = approve_response.json()
-    assert run["status"] == "completed"
+    assert run["status"] == "running"
+    run = wait_for_run(client, run["id"], "completed")
     assert run["started_at"] is not None
     assert run["finished_at"] is not None
 
@@ -113,6 +145,7 @@ def test_no_revision_event_order_is_deterministic(client: TestClient) -> None:
         headers={"Idempotency-Key": "deterministic-1"},
     )
     run = approve_response.json()
+    wait_for_run(client, run["id"], "completed")
     assert event_types(client, run["id"]) == [
         "run.created",
         "plan.proposed",
@@ -160,6 +193,7 @@ def test_approval_idempotency_does_not_repeat_effects(
     )
     assert first.status_code == 201
     run_id = first.json()["id"]
+    wait_for_run(client, run_id, "completed")
     first_events = client.get(f"/api/runs/{run_id}/events").json()
     first_artifacts = client.get(f"/api/runs/{run_id}/artifacts").json()
     call_counts = (
@@ -193,12 +227,13 @@ def test_work_failure_stops_later_items(
     client: TestClient, db_session: Session
 ) -> None:
     failing_model = FakeModelAdapter(fail_on_position=2)
-    app.state.runtime_service = RuntimeService(
+    failing_runtime = RuntimeService(
         session_factory=db_session_module.get_session_factory(),
         model_adapter=failing_model,
         checkpointer=InMemorySaver(),
         graph_version="p1-v1",
     )
+    install_runtime(failing_runtime)
     objective_id = create_objective(client, "Failure run")
     client.post(f"/api/objectives/{objective_id}/plan")
     response = client.post(
@@ -207,7 +242,9 @@ def test_work_failure_stops_later_items(
     )
     assert response.status_code == 201
     run = response.json()
+    run = wait_for_run(client, run["id"], "failed")
     assert run["status"] == "failed"
+    assert run["retryable"] is True
     assert run["error_code"] == "SPECIALIST_EXECUTION_FAILED"
     assert event_types(client, run["id"])[-2:] == ["work.failed", "run.failed"]
 
@@ -224,6 +261,107 @@ def test_work_failure_stops_later_items(
             db, run_id=UUID(run["id"])
         )
         assert len(artifacts) == 1
+
+
+def test_failed_work_retries_same_run_without_repeating_artifacts(
+    client: TestClient,
+) -> None:
+    failing_model = FakeModelAdapter(fail_on_position=2)
+    failing_runtime = RuntimeService(
+        session_factory=db_session_module.get_session_factory(),
+        model_adapter=failing_model,
+        checkpointer=InMemorySaver(),
+        graph_version="p1-v1",
+    )
+    install_runtime(failing_runtime)
+    objective_id = create_objective(client, "Retry failed work")
+    client.post(f"/api/objectives/{objective_id}/plan")
+    approval = client.post(
+        f"/api/objectives/{objective_id}/plan/approve",
+        headers={"Idempotency-Key": "retry-work-approval"},
+    )
+    run_id = approval.json()["id"]
+    wait_for_run(client, run_id, "failed")
+    first_artifacts = client.get(
+        f"/api/runs/{run_id}/artifacts"
+    ).json()
+    assert len(first_artifacts) == 1
+
+    retry = client.post(
+        f"/api/runs/{run_id}/retry",
+        headers={"Idempotency-Key": "retry-work-1"},
+    )
+    assert retry.status_code == 202
+    assert retry.json()["id"] == run_id
+    assert retry.json()["status"] == "running"
+    completed = wait_for_run(client, run_id, "completed")
+    assert completed["retryable"] is False
+    artifacts = client.get(f"/api/runs/{run_id}/artifacts").json()
+    assert len(artifacts) == 4
+    assert artifacts[0] == first_artifacts[0]
+    assert event_types(client, run_id).count("work.progress") == 1
+    assert event_types(client, run_id).count("work.failed") == 1
+
+    events_before = client.get(f"/api/runs/{run_id}/events").json()
+    calls_before = (
+        failing_model.plan_calls,
+        failing_model.work_calls,
+        failing_model.brief_calls,
+    )
+    repeated = client.post(
+        f"/api/runs/{run_id}/retry",
+        headers={"Idempotency-Key": "retry-work-1"},
+    )
+    assert repeated.status_code == 202
+    assert repeated.json()["status"] == "completed"
+    assert client.get(f"/api/runs/{run_id}/events").json() == events_before
+    assert (
+        failing_model.plan_calls,
+        failing_model.work_calls,
+        failing_model.brief_calls,
+    ) == calls_before
+
+    competing = client.post(
+        f"/api/runs/{run_id}/retry",
+        headers={"Idempotency-Key": "retry-work-2"},
+    )
+    assert competing.status_code == 409
+    assert competing.json()["code"] == "RUN_NOT_RETRYABLE"
+
+
+def test_failed_brief_retries_only_brief(
+    client: TestClient,
+) -> None:
+    failing_model = FakeModelAdapter(fail_brief_once=True)
+    failing_runtime = RuntimeService(
+        session_factory=db_session_module.get_session_factory(),
+        model_adapter=failing_model,
+        checkpointer=InMemorySaver(),
+        graph_version="p1-v1",
+    )
+    install_runtime(failing_runtime)
+    objective_id = create_objective(client, "Retry failed brief")
+    client.post(f"/api/objectives/{objective_id}/plan")
+    approval = client.post(
+        f"/api/objectives/{objective_id}/plan/approve",
+        headers={"Idempotency-Key": "retry-brief-approval"},
+    )
+    run_id = approval.json()["id"]
+    wait_for_run(client, run_id, "failed")
+    assert failing_model.work_calls == 3
+    assert failing_model.brief_calls == 1
+
+    retry = client.post(
+        f"/api/runs/{run_id}/retry",
+        headers={"Idempotency-Key": "retry-brief-1"},
+    )
+    assert retry.status_code == 202
+    wait_for_run(client, run_id, "completed")
+    assert failing_model.work_calls == 3
+    assert failing_model.brief_calls == 2
+    artifacts = client.get(f"/api/runs/{run_id}/artifacts").json()
+    assert len(artifacts) == 4
+    assert artifacts[-1]["artifact_type"] == "executive_brief"
 
 
 def test_checkpoint_can_resume_with_rebuilt_runtime(
@@ -257,7 +395,10 @@ def test_checkpoint_can_resume_with_rebuilt_runtime(
         checkpointer=checkpointer,
         graph_version="p1-v1",
     )
-    run = rebuilt_runtime.approve_plan(objective.id, "resume-key")
+    result = rebuilt_runtime.approve_plan(objective.id, "resume-key")
+    assert result.run.status == "running"
+    rebuilt_runtime.resume_run(result.run.id)
+    run = rebuilt_runtime.get_run(result.run.id)
     assert run.status == "completed"
 
     with db_session_module.get_session_factory()() as db:

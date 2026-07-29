@@ -42,8 +42,14 @@ class ModelAdapter(Protocol):
 
 
 class FakeModelAdapter:
-    def __init__(self, fail_on_position: int | None = None) -> None:
+    def __init__(
+        self,
+        fail_on_position: int | None = None,
+        *,
+        fail_brief_once: bool = False,
+    ) -> None:
         self.fail_on_position = fail_on_position
+        self.fail_brief_once = fail_brief_once
         self.plan_calls = 0
         self.work_calls = 0
         self.brief_calls = 0
@@ -131,6 +137,10 @@ class FakeModelAdapter:
         artifact_titles: list[str],
     ) -> ExecutiveBriefDraft:
         self.brief_calls += 1
+        if self.fail_brief_once and self.brief_calls == 1:
+            raise ModelAdapterError(
+                "Deterministic fake-model brief failure"
+            )
         artifact_list = "\n".join(f"- {title}" for title in artifact_titles)
         title = f"Executive brief: {objective_title}"
         return ExecutiveBriefDraft(

@@ -7,7 +7,8 @@ This repository is a pnpm monorepo containing two applications:
 - `apps/web/`: Next.js 16 owner console. App Router pages and layouts live in `apps/web/app/`.
 - `apps/api/`: FastAPI service. Application code is under `apps/api/app/`,
   LangGraph orchestration and versioned prompts are under
-  `apps/api/app/runtime/`, Alembic revisions are under
+  `apps/api/app/runtime/`, including the single-threaded Phase 1 execution
+  coordinator. Alembic revisions are under
   `apps/api/alembic/versions/`, and pytest tests and JSON fixtures are under
   `apps/api/tests/`.
 - `contracts/openapi.yaml`: approved Phase 1 API contract shared across modules.
@@ -55,9 +56,25 @@ opt-in through their existing environment flags.
   Never persist secrets, full prompts, or provider-native responses.
 - Preserve approval idempotency: the same key must not repeat model calls,
   events, or artifacts, while a competing key must conflict.
-- P1-M05 owns synchronous graph execution and persisted run reads. SSE delivery,
-  retry/recovery hardening, and the final error taxonomy belong to P1-M06;
-  production UI wiring belongs to P1-M07.
+- Persist approval and retry claims before submitting work. The Phase 1
+  coordinator supports one API process and one worker thread; do not add
+  multi-process workers, queues, scheduled retries, or backoff before Phase 3.
+- Retry keeps the same run ID and resumes only the failed work item or executive
+  brief. Preserve completed work and artifacts. Every new attempt needs a new
+  idempotency key; any earlier key is read-only and must never reschedule work.
+- SSE emits only persisted `RunEvent` envelopes. Use event sequence as the SSE
+  ID, apply the greater of `after_sequence` and `Last-Event-ID`, send keep-alive
+  comments without inventing domain events, and drain terminal events before
+  closing.
+- Startup recovery may resume only `pending` and `running` runs from their
+  persisted checkpoint and approval/retry command. Replayed nodes must reuse
+  persisted plans, running work, artifacts, briefs, and terminal effects.
+- Hard-crash recovery may repeat a provider model call in the
+  response-before-checkpoint window, but it must not duplicate persisted events
+  or artifacts.
+- P1-M06 owns asynchronous in-process execution, SSE, same-run retry, recovery,
+  and the error taxonomy. Production objective, plan, board, run, artifact, and
+  SSE UI wiring belongs to P1-M07.
 
 ## Commit & Pull Request Guidelines
 

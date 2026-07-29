@@ -9,6 +9,8 @@ from app.contracts.work_items import WorkItem, WorkItemStatus
 from app.db.session import get_db
 from app.repositories import objective_repo, work_item_repo
 from app.runtime.dependencies import get_runtime_service
+from app.runtime.dependencies import get_runtime_coordinator
+from app.runtime.coordinator import RuntimeCoordinator
 from app.runtime.service import RuntimeService
 
 router = APIRouter(tags=["work"])
@@ -95,8 +97,12 @@ def approve_plan(
         alias="Idempotency-Key",
     ),
     runtime: RuntimeService = Depends(get_runtime_service),
+    coordinator: RuntimeCoordinator = Depends(get_runtime_coordinator),
 ) -> AgentRun:
-    return runtime.approve_plan(objective_id, idempotency_key)
+    result = runtime.approve_plan(objective_id, idempotency_key)
+    if result.should_schedule:
+        coordinator.submit(result.run.id)
+    return result.run
 
 
 @router.get(

@@ -231,6 +231,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/retry": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Reusing a key returns the original run and never starts another. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                run_id: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["retryRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/artifacts": {
         parameters: {
             query?: never;
@@ -258,12 +279,14 @@ export interface components {
             status: "ok";
         };
         Error: {
-            code: string;
+            code: components["schemas"]["ErrorCode"];
             message: string;
             details?: {
                 [key: string]: unknown;
             };
         };
+        /** @enum {string} */
+        ErrorCode: "NOT_FOUND" | "VALIDATION_ERROR" | "STATE_CONFLICT" | "ACTIVE_RUN_EXISTS" | "PLAN_NOT_AWAITING_APPROVAL" | "APPROVAL_ALREADY_CLAIMED" | "RUN_NOT_RETRYABLE" | "RUNTIME_UNAVAILABLE" | "INTERNAL_ERROR" | "INVALID_OBJECTIVE_STATE" | "AGENT_CONFIGURATION_INVALID" | "OBJECTIVE_VALIDATION_FAILED" | "PROMPT_VERSION_NOT_FOUND" | "PLAN_GENERATION_FAILED" | "PLAN_PERSISTENCE_FAILED" | "PLAN_APPROVAL_FAILED" | "SPECIALIST_EXECUTION_FAILED" | "ARTIFACT_PERSISTENCE_FAILED" | "BRIEF_SYNTHESIS_FAILED" | "RUN_RECOVERY_FAILED" | "RUNTIME_FAILED";
         Company: {
             /** Format: uuid */
             id: string;
@@ -367,6 +390,8 @@ export interface components {
         };
         /** @enum {string} */
         RunStatus: "pending" | "awaiting_approval" | "running" | "completed" | "failed";
+        /** @enum {string} */
+        RunErrorCode: "INVALID_OBJECTIVE_STATE" | "AGENT_CONFIGURATION_INVALID" | "OBJECTIVE_VALIDATION_FAILED" | "PROMPT_VERSION_NOT_FOUND" | "PLAN_GENERATION_FAILED" | "PLAN_PERSISTENCE_FAILED" | "PLAN_APPROVAL_FAILED" | "SPECIALIST_EXECUTION_FAILED" | "ARTIFACT_PERSISTENCE_FAILED" | "BRIEF_SYNTHESIS_FAILED" | "RUN_RECOVERY_FAILED" | "RUNTIME_FAILED";
         AgentRun: {
             /** Format: uuid */
             id: string;
@@ -380,7 +405,9 @@ export interface components {
             started_at?: string | null;
             /** Format: date-time */
             finished_at?: string | null;
-            error_code?: string | null;
+            error_code?: components["schemas"]["RunErrorCode"] | null;
+            /** @description True only when same-run retry has a valid failed stage. */
+            retryable: boolean;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -452,6 +479,33 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description The request failed without exposing internal details. */
+        InternalError: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description The configured runtime model provider failed. */
+        UpstreamError: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description The checkpointed runtime is unavailable. */
+        ServiceUnavailable: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
     };
     parameters: {
         AgentId: string;
@@ -505,6 +559,8 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
         };
     };
     updateCompany: {
@@ -573,6 +629,8 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
         };
     };
     updateAgent: {
@@ -601,6 +659,7 @@ export interface operations {
             };
             404: components["responses"]["NotFound"];
             422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
         };
     };
     listObjectives: {
@@ -669,6 +728,8 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
         };
     };
     createPlan: {
@@ -694,6 +755,9 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
+            502: components["responses"]["UpstreamError"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     revisePlan: {
@@ -723,6 +787,9 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
+            502: components["responses"]["UpstreamError"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     approvePlan: {
@@ -739,7 +806,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Approved plan and the one run started for this key. */
+            /** @description Approved plan and immediately returned running run. */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -751,6 +818,8 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     listWorkItems: {
@@ -797,6 +866,8 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
         };
     };
     listRunEvents: {
@@ -823,13 +894,18 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
         };
     };
     streamRunEvents: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Initial cursor for browser EventSource clients. */
+                after_sequence?: number;
+            };
             header?: {
-                /** @description Last received run-event sequence. */
+                /** @description Automatic reconnect cursor; the greater cursor wins. */
                 "Last-Event-ID"?: number;
             };
             path: {
@@ -850,6 +926,38 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    retryRun: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Reusing a key returns the original run and never starts another. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                run_id: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Existing run accepted for same-run failed-stage retry. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRun"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     listRunArtifacts: {
@@ -873,6 +981,8 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            500: components["responses"]["InternalError"];
         };
     };
 }

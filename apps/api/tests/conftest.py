@@ -12,6 +12,7 @@ from app.db import session as db_session_module
 from app.db.session import get_db
 from app.main import app
 from app.runtime.model_adapters import FakeModelAdapter
+from app.runtime.coordinator import RuntimeCoordinator
 from app.runtime.service import RuntimeService
 
 
@@ -71,7 +72,14 @@ def client(
 
     app.dependency_overrides[get_db] = override_get_db
     app.state.runtime_service = runtime_service
+    coordinator = RuntimeCoordinator(runtime_service)
+    app.state.runtime_coordinator = coordinator
     with TestClient(app) as test_client:
         yield test_client
+    coordinator = getattr(
+        app.state, "runtime_coordinator", coordinator
+    )
+    coordinator.shutdown()
     app.dependency_overrides.clear()
+    del app.state.runtime_coordinator
     del app.state.runtime_service
