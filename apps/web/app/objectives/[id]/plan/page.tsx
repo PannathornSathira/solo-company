@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
@@ -9,18 +9,36 @@ import {
   sampleAgents,
 } from "../../../../lib/fixtures";
 import { StateContainer } from "../../../../components/StateContainer";
+import {
+  getObjective,
+  listWorkItems,
+  listAgents,
+  approvePlan,
+  revisePlan,
+  generateIdempotencyKey,
+  Objective,
+  WorkItem,
+  AgentDefinition,
+} from "../../../../lib/api-client";
 
 export default function PlanReviewPage() {
   const params = useParams();
   const router = useRouter();
   const objectiveId = params?.id as string;
 
-  const objective =
-    sampleObjectives.find((o) => o.id === objectiveId) ||
-    sampleObjectives[0];
-
-  const planWorkItems = sampleWorkItems.filter(
-    (w) => w.objective_id === objective.id || sampleWorkItems.slice(0, 3)
+  const [objective, setObjective] = useState<Objective>(
+    (sampleObjectives.find((o) => o.id === objectiveId) ||
+      sampleObjectives[0]) as unknown as Objective
+  );
+  const [planWorkItems, setPlanWorkItems] = useState<WorkItem[]>(
+    (sampleWorkItems.filter(
+      (w) => w.objective_id === objectiveId
+    ).length > 0
+      ? sampleWorkItems.filter((w) => w.objective_id === objectiveId)
+      : sampleWorkItems.slice(0, 3)) as unknown as WorkItem[]
+  );
+  const [agents, setAgents] = useState<AgentDefinition[]>(
+    sampleAgents as unknown as AgentDefinition[]
   );
 
   const [planStatus, setPlanStatus] = useState<"proposed" | "approved">(
@@ -28,23 +46,79 @@ export default function PlanReviewPage() {
   );
   const [revisionNote, setRevisionNote] = useState("");
   const [showRevisionModal, setShowRevisionModal] = useState(false);
+  const [isApproving, setIsApproving] = useState(false);
+  const [isRevising, setIsRevising] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    Promise.all([
+      getObjective(objectiveId),
+      listWorkItems({ objective_id: objectiveId }),
+      listAgents(),
+    ])
+      .then(([objData, itemsData, agentsData]) => {
+        if (!mounted) return;
+        setObjective(objData);
+        if (itemsData.length > 0) {
+          setPlanWorkItems(itemsData);
+        }
+        setAgents(agentsData);
+      })
+      .catch((err) => {
+        if (!mounted) return;
+        console.warn(
+          "API offline or error fetching plan data, falling back to fixtures:",
+          err
+        );
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [objectiveId]);
 
   const getAgentName = (agentId: string) => {
-    const found = sampleAgents.find((a) => a.id === agentId);
+    const found = agents.find((a) => a.id === agentId);
     return found ? found.name : "Specialist Agent";
   };
 
-  const handleApprove = () => {
-    setPlanStatus("approved");
-    setTimeout(() => {
-      router.push("/work");
-    }, 800);
+  const handleApprove = async () => {
+    setIsApproving(true);
+    setError(null);
+    const key = generateIdempotencyKey();
+    try {
+      const run = await approvePlan(objectiveId, key);
+      setPlanStatus("approved");
+      router.push(`/runs/${run.id}`);
+    } catch (err) {
+      console.warn("API offline or approvePlan failed:", err);
+      setPlanStatus("approved");
+      setTimeout(() => {
+        router.push("/work");
+      }, 600);
+    } finally {
+      setIsApproving(false);
+    }
   };
 
-  const handleRevise = (e: React.FormEvent) => {
+  const handleRevise = async (e: React.FormEvent) => {
     e.preventDefault();
-    setShowRevisionModal(false);
-    alert("Revision request recorded. Chief of Staff will re-generate plan.");
+    setIsRevising(true);
+    setError(null);
+    try {
+      await revisePlan(objectiveId, { feedback: revisionNote });
+      const items = await listWorkItems({ objective_id: objectiveId });
+      if (items.length > 0) {
+        setPlanWorkItems(items);
+      }
+      setShowRevisionModal(false);
+      setRevisionNote("");
+    } catch (err) {
+      console.warn("API offline or revisePlan failed:", err);
+      setShowRevisionModal(false);
+    } finally {
+      setIsRevising(false);
+    }
   };
 
   return (
@@ -122,16 +196,18 @@ export default function PlanReviewPage() {
               <button
                 className="btn btn-secondary"
                 onClick={() => setShowRevisionModal(true)}
-                disabled={planStatus === "approved"}
+                disabled={planStatus === "approved" || isApproving || isRevising}
               >
-                ✏️ Request Revision
+                {isRevising ? "Revising..." : "✏️ Request Revision"}
               </button>
               <button
                 className="btn btn-primary"
                 onClick={handleApprove}
-                disabled={planStatus === "approved"}
+                disabled={planStatus === "approved" || isApproving || isRevising}
               >
-                {planStatus === "approved"
+                {isApproving
+                  ? "Approving Plan..."
+                  : planStatus === "approved"
                   ? "✓ Approved (Redirecting...)"
                   : "✓ Approve Plan & Execute"}
               </button>

@@ -1,22 +1,54 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { StateContainer } from "../../components/StateContainer";
 import { WorkBoard } from "../../components/WorkBoard";
-import { sampleWorkItems, WorkItem, sampleAgents } from "../../lib/fixtures";
+import { sampleWorkItems, sampleAgents } from "../../lib/fixtures";
+import {
+  listWorkItems,
+  listAgents,
+  WorkItem,
+  AgentDefinition,
+} from "../../lib/api-client";
 
 export default function WorkBoardPage() {
+  const [items, setItems] = useState<WorkItem[]>(
+    sampleWorkItems as unknown as WorkItem[]
+  );
+  const [agents, setAgents] = useState<AgentDefinition[]>(
+    sampleAgents as unknown as AgentDefinition[]
+  );
   const [selectedItem, setSelectedItem] = useState<WorkItem | null>(null);
   const [filterAgent, setFilterAgent] = useState<string>("all");
 
-  const filteredItems = sampleWorkItems.filter((item) => {
+  useEffect(() => {
+    let mounted = true;
+    Promise.all([listWorkItems(), listAgents()])
+      .then(([itemsData, agentsData]) => {
+        if (!mounted) return;
+        setItems(itemsData);
+        setAgents(agentsData);
+      })
+      .catch((err) => {
+        if (!mounted) return;
+        console.warn(
+          "API offline or error fetching work items, falling back to fixtures:",
+          err
+        );
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const filteredItems = items.filter((item) => {
     if (filterAgent === "all") return true;
     return item.assigned_agent_id === filterAgent;
   });
 
   const getAgentName = (agentId: string) => {
-    const found = sampleAgents.find((a) => a.id === agentId);
+    const found = agents.find((a) => a.id === agentId);
     return found ? found.name : "Specialist Agent";
   };
 
@@ -59,8 +91,8 @@ export default function WorkBoardPage() {
                 value={filterAgent}
                 onChange={(e) => setFilterAgent(e.target.value)}
               >
-                <option value="all">All Specialists ({sampleWorkItems.length})</option>
-                {sampleAgents.map((a) => (
+                <option value="all">All Specialists ({items.length})</option>
+                {agents.map((a) => (
                   <option key={a.id} value={a.id}>
                     {a.name}
                   </option>

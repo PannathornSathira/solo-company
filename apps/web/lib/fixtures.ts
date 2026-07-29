@@ -39,7 +39,7 @@ export interface WorkItem {
   id: string;
   company_id: string;
   objective_id: string;
-  parent_id: string | null;
+  parent_id?: string | null;
   assigned_agent_id: string;
   title: string;
   instructions: string;
@@ -90,7 +90,7 @@ export interface Artifact {
   id: string;
   company_id: string;
   run_id: string;
-  work_item_id?: string;
+  work_item_id?: string | null;
   artifact_type: string;
   title: string;
   content_markdown: string;

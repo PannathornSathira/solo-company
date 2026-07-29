@@ -5,9 +5,10 @@ import { RunEvent, sampleArtifacts, Artifact } from "../lib/fixtures";
 
 interface RunTimelineProps {
   events: RunEvent[];
+  artifacts?: Artifact[];
 }
 
-export function RunTimeline({ events }: RunTimelineProps) {
+export function RunTimeline({ events, artifacts }: RunTimelineProps) {
   const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(
     null
   );
@@ -30,8 +31,10 @@ export function RunTimeline({ events }: RunTimelineProps) {
 
   const getArtifactForEvent = (event: RunEvent) => {
     if (!event.payload_json?.artifact_id) return null;
+    const artList =
+      artifacts && artifacts.length > 0 ? artifacts : sampleArtifacts;
     return (
-      sampleArtifacts.find(
+      artList.find(
         (a) => a.id === (event.payload_json.artifact_id as string)
       ) || null
     );

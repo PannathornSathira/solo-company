@@ -133,6 +133,8 @@ requires `GEMINI_API_KEY` and may incur provider costs.
 The Phase 1 API contract is [`contracts/openapi.yaml`](contracts/openapi.yaml).
 Architecture decisions and module handoffs live under `docs/`; the reliability
 handoff is
-[`docs/modules/phase-1/p1-m06.md`](docs/modules/phase-1/p1-m06.md), and its
+[`docs/modules/phase-1/p1-m06.md`](docs/modules/phase-1/p1-m06.md), the UI
+integration handoff is
+[`docs/modules/phase-1/p1-m07.md`](docs/modules/phase-1/p1-m07.md), and its
 checkpoint policy is
 [`docs/architecture/adr-003-langgraph-state-and-recovery.md`](docs/architecture/adr-003-langgraph-state-and-recovery.md).

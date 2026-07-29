@@ -9,6 +9,14 @@ export type ObjectiveCreate = components["schemas"]["ObjectiveCreate"];
 export type WorkItem = components["schemas"]["WorkItem"];
 export type Health = components["schemas"]["Health"];
 export type ErrorResponse = components["schemas"]["Error"];
+export type Plan = components["schemas"]["Plan"];
+export type PlanRevision = components["schemas"]["PlanRevision"];
+export type AgentRun = components["schemas"]["AgentRun"];
+export type RunEvent = components["schemas"]["RunEvent"];
+export type Artifact = components["schemas"]["Artifact"];
+export type RunStatus = components["schemas"]["RunStatus"];
+export type EventType = components["schemas"]["EventType"];
+export type RunErrorCode = components["schemas"]["RunErrorCode"];
 
 const API_BASE_URL = process.env["NEXT_PUBLIC_API_URL"] || "http://localhost:8000";
 
@@ -108,3 +116,85 @@ export async function listWorkItems(params?: {
 export async function getHealth(): Promise<Health> {
   return fetchJson<Health>("/api/health");
 }
+
+export function generateIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+export async function createPlan(objectiveId: string): Promise<Plan> {
+  return fetchJson<Plan>(`/api/objectives/${encodeURIComponent(objectiveId)}/plan`, {
+    method: "POST",
+  });
+}
+
+export async function revisePlan(
+  objectiveId: string,
+  data: PlanRevision
+): Promise<Plan> {
+  return fetchJson<Plan>(`/api/objectives/${encodeURIComponent(objectiveId)}/plan/revise`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function approvePlan(
+  objectiveId: string,
+  idempotencyKey: string
+): Promise<AgentRun> {
+  return fetchJson<AgentRun>(
+    `/api/objectives/${encodeURIComponent(objectiveId)}/plan/approve`,
+    {
+      method: "POST",
+      headers: {
+        "Idempotency-Key": idempotencyKey,
+      },
+    }
+  );
+}
+
+export async function getRun(runId: string): Promise<AgentRun> {
+  return fetchJson<AgentRun>(`/api/runs/${encodeURIComponent(runId)}`);
+}
+
+export async function listRunEvents(
+  runId: string,
+  afterSequence?: number
+): Promise<RunEvent[]> {
+  const searchParams = new URLSearchParams();
+  if (afterSequence !== undefined && afterSequence > 0) {
+    searchParams.set("after_sequence", String(afterSequence));
+  }
+  const queryString = searchParams.toString();
+  const endpoint = `/api/runs/${encodeURIComponent(runId)}/events${
+    queryString ? `?${queryString}` : ""
+  }`;
+  return fetchJson<RunEvent[]>(endpoint);
+}
+
+export async function listRunArtifacts(runId: string): Promise<Artifact[]> {
+  return fetchJson<Artifact[]>(`/api/runs/${encodeURIComponent(runId)}/artifacts`);
+}
+
+export async function retryRun(
+  runId: string,
+  idempotencyKey: string
+): Promise<AgentRun> {
+  return fetchJson<AgentRun>(`/api/runs/${encodeURIComponent(runId)}/retry`, {
+    method: "POST",
+    headers: {
+      "Idempotency-Key": idempotencyKey,
+    },
+  });
+}
+
+export function getApiBaseUrl(): string {
+  return API_BASE_URL;
+}
+

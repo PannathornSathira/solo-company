@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { StateContainer } from "../../../components/StateContainer";
 import { sampleObjectives } from "../../../lib/fixtures";
+import { createObjective, createPlan } from "../../../lib/api-client";
 
 export default function NewObjectivePage() {
   const router = useRouter();
@@ -17,6 +18,8 @@ export default function NewObjectivePage() {
     "Onboarding time must be under 3 business days per client",
   ]);
   const [submitted, setSubmitted] = useState(false);
+  const [statusText, setStatusText] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
   const handleAddConstraint = () => {
     if (constraintInput.trim()) {
@@ -29,13 +32,34 @@ export default function NewObjectivePage() {
     setConstraints(constraints.filter((_, i) => i !== index));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitted(true);
-    // Simulate navigation to the plan review page of sample objective
-    setTimeout(() => {
-      router.push(`/objectives/${sampleObjectives[0].id}/plan`);
-    }, 800);
+    setError(null);
+    setStatusText("Creating objective...");
+
+    try {
+      const objective = await createObjective({
+        title,
+        desired_outcome: desiredOutcome,
+        context: context.trim(),
+        constraints: constraints,
+      });
+
+      setStatusText("Generating proposed plan from Chief of Staff...");
+      await createPlan(objective.id);
+
+      router.push(`/objectives/${objective.id}/plan`);
+    } catch (err) {
+      console.warn(
+        "API offline or error creating objective/plan, falling back to fixture:",
+        err
+      );
+      setStatusText("Using offline demo mode...");
+      setTimeout(() => {
+        router.push(`/objectives/${sampleObjectives[0].id}/plan`);
+      }, 600);
+    }
   };
 
   return (
@@ -44,6 +68,22 @@ export default function NewObjectivePage() {
       emptyDescription="Create a new objective below to instruct the Chief of Staff agent to generate a structured work plan."
     >
       <div style={{ maxWidth: "800px", margin: "0 auto" }}>
+        {error && (
+          <div
+            style={{
+              padding: "0.75rem 1rem",
+              backgroundColor: "rgba(239, 68, 68, 0.15)",
+              border: "1px solid var(--accent-rose)",
+              borderRadius: "var(--radius-sm)",
+              marginBottom: "1rem",
+              color: "var(--accent-rose)",
+              fontSize: "0.9rem",
+            }}
+          >
+            {error}
+          </div>
+        )}
+
         <div style={{ marginBottom: "1.5rem" }}>
           <Link
             href="/"
@@ -217,7 +257,7 @@ export default function NewObjectivePage() {
                 disabled={submitted}
               >
                 {submitted
-                  ? "Generating Plan..."
+                  ? statusText || "Generating Plan..."
                   : "Submit Objective to Chief of Staff"}
               </button>
             </div>

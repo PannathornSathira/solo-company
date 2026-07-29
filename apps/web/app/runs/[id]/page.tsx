@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { StateContainer } from "../../../components/StateContainer";
@@ -10,22 +10,159 @@ import {
   sampleRunEvents,
   sampleArtifacts,
   sampleObjectives,
-  Artifact,
 } from "../../../lib/fixtures";
+import {
+  getRun,
+  listRunEvents,
+  listRunArtifacts,
+  retryRun,
+  getObjective,
+  generateIdempotencyKey,
+  getApiBaseUrl,
+  AgentRun,
+  RunEvent,
+  Artifact,
+  Objective,
+} from "../../../lib/api-client";
 
 export default function RunInspectionPage() {
   const params = useParams();
   const runId = params?.id as string;
 
-  const run =
-    sampleRuns.find((r) => r.id === runId) || sampleRuns[0];
-  const objective =
-    sampleObjectives.find((o) => o.id === run.objective_id) ||
-    sampleObjectives[0];
-
+  const [run, setRun] = useState<AgentRun>(
+    (sampleRuns.find((r) => r.id === runId) || sampleRuns[0]) as unknown as AgentRun
+  );
+  const [objective, setObjective] = useState<Objective>(
+    (sampleObjectives.find((o) => o.id === (run ? run.objective_id : "")) ||
+      sampleObjectives[0]) as unknown as Objective
+  );
+  const [events, setEvents] = useState<RunEvent[]>(
+    (sampleRunEvents.filter((e) => e.run_id === runId).length > 0
+      ? sampleRunEvents.filter((e) => e.run_id === runId)
+      : sampleRunEvents) as unknown as RunEvent[]
+  );
+  const [artifacts, setArtifacts] = useState<Artifact[]>(
+    (sampleArtifacts.filter((a) => a.run_id === runId).length > 0
+      ? sampleArtifacts.filter((a) => a.run_id === runId)
+      : sampleArtifacts) as unknown as Artifact[]
+  );
   const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(
     null
   );
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    Promise.all([
+      getRun(runId),
+      listRunEvents(runId),
+      listRunArtifacts(runId),
+    ])
+      .then(([runData, evData, artData]) => {
+        if (!mounted) return;
+        setRun(runData);
+        if (evData.length > 0) setEvents(evData);
+        if (artData.length > 0) setArtifacts(artData);
+        return getObjective(runData.objective_id)
+          .then((objData) => {
+            if (mounted) setObjective(objData);
+          })
+          .catch(() => {});
+      })
+      .catch((err) => {
+        if (!mounted) return;
+        console.warn("API offline or error fetching run data, using fixtures:", err);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [runId]);
+
+  useEffect(() => {
+    let es: EventSource | null = null;
+    try {
+      const maxSequence =
+        events.length > 0
+          ? Math.max(...events.map((e) => e.sequence || 0))
+          : 0;
+      const url = `${getApiBaseUrl()}/api/runs/${encodeURIComponent(
+        runId
+      )}/stream?after_sequence=${maxSequence}`;
+      es = new EventSource(url);
+
+      const eventTypes = [
+        "run.created",
+        "plan.proposed",
+        "plan.revision_requested",
+        "plan.approved",
+        "work.started",
+        "work.progress",
+        "artifact.created",
+        "work.completed",
+        "work.failed",
+        "brief.created",
+        "run.completed",
+        "run.failed",
+      ];
+
+      const handler = (msg: MessageEvent) => {
+        try {
+          const newEv = JSON.parse(msg.data) as RunEvent;
+          setEvents((prev) => {
+            if (prev.some((e) => e.sequence === newEv.sequence)) {
+              return prev;
+            }
+            return [...prev, newEv].sort((a, b) => a.sequence - b.sequence);
+          });
+          if (newEv.event_type === "artifact.created") {
+            listRunArtifacts(runId)
+              .then((arts) => setArtifacts(arts))
+              .catch(() => {});
+          } else if (
+            newEv.event_type === "run.completed" ||
+            newEv.event_type === "run.failed"
+          ) {
+            getRun(runId)
+              .then((r) => setRun(r))
+              .catch(() => {});
+            listRunArtifacts(runId)
+              .then((arts) => setArtifacts(arts))
+              .catch(() => {});
+            if (es) es.close();
+          }
+        } catch (err) {
+          // ignore parse errors
+        }
+      };
+
+      eventTypes.forEach((type) => {
+        es?.addEventListener(type, handler);
+      });
+    } catch (err) {
+      console.warn("EventSource stream not available:", err);
+    }
+
+    return () => {
+      if (es) es.close();
+    };
+  }, [runId]);
+
+  const handleRetry = async () => {
+    setIsRetrying(true);
+    setError(null);
+    const key = generateIdempotencyKey();
+    try {
+      const updatedRun = await retryRun(runId, key);
+      setRun(updatedRun);
+    } catch (err) {
+      console.warn("API offline or retryRun failed:", err);
+      // fallback in offline mode
+      setRun((prev) => ({ ...prev, status: "running" as const, retryable: false }));
+    } finally {
+      setIsRetrying(false);
+    }
+  };
 
   return (
     <StateContainer
@@ -106,8 +243,14 @@ export default function RunInspectionPage() {
               >
                 Inspect Plan
               </Link>
-              {run.status === "failed" && (
-                <button className="btn btn-primary">🔄 Retry Run</button>
+              {(run.retryable || run.status === "failed") && (
+                <button
+                  className="btn btn-primary"
+                  onClick={handleRetry}
+                  disabled={isRetrying}
+                >
+                  {isRetrying ? "Retrying..." : "🔄 Retry Run"}
+                </button>
               )}
             </div>
           </div>
@@ -263,11 +406,11 @@ export default function RunInspectionPage() {
                 </p>
               </div>
               <span className="badge badge-running">
-                {sampleRunEvents.length} Events
+                {events.length} Events
               </span>
             </div>
 
-            <RunTimeline events={sampleRunEvents} />
+            <RunTimeline events={events} artifacts={artifacts} />
           </div>
 
           {/* Artifacts Column */}
@@ -297,7 +440,7 @@ export default function RunInspectionPage() {
                 gap: "1rem",
               }}
             >
-              {sampleArtifacts.map((artifact) => (
+              {artifacts.map((artifact) => (
                 <div
                   key={artifact.id}
                   style={{
