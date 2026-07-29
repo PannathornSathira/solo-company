@@ -158,7 +158,7 @@ export function RunTimeline({ events, artifacts }: RunTimelineProps) {
           onClick={() => setSelectedArtifact(null)}
         >
           <div
-            className="card"
+            className="card animate-fade-in"
             style={{
               maxWidth: "800px",
               width: "100%",

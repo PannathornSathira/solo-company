@@ -131,10 +131,11 @@ does not alter normal application tables. The real-model smoke test also
 requires `GEMINI_API_KEY` and may incur provider costs.
 
 The Phase 1 API contract is [`contracts/openapi.yaml`](contracts/openapi.yaml).
-Architecture decisions and module handoffs live under `docs/`; the reliability
-handoff is
-[`docs/modules/phase-1/p1-m06.md`](docs/modules/phase-1/p1-m06.md), the UI
-integration handoff is
-[`docs/modules/phase-1/p1-m07.md`](docs/modules/phase-1/p1-m07.md), and its
+For operator setup, configuration, and troubleshooting, see the
+[`docs/operator-guide.md`](docs/operator-guide.md). For a step-by-step
+end-to-end walkthrough of the Phase 1 MVP demo, see
+[`docs/demo.md`](docs/demo.md). Architecture decisions and module handoffs live
+under `docs/`; the Phase 1 completion report is
+[`docs/modules/phase-1/p1-m08.md`](docs/modules/phase-1/p1-m08.md), and its
 checkpoint policy is
 [`docs/architecture/adr-003-langgraph-state-and-recovery.md`](docs/architecture/adr-003-langgraph-state-and-recovery.md).

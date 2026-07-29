@@ -394,6 +394,96 @@ export const sampleRunEvents: RunEvent[] = [
     payload_json: { completion_percentage: 75 },
     created_at: "2026-07-27T09:40:00Z",
   },
+  {
+    id: "e7000000-0000-4000-8000-000000000007",
+    company_id: sampleCompany.id,
+    run_id: sampleRuns[1].id,
+    sequence: 1,
+    event_type: "run.created",
+    summary: "Started Phase 1 run for customer retention audit objective",
+    payload_json: { objective_id: sampleObjectives[1].id },
+    created_at: "2026-07-15T09:05:00Z",
+  },
+  {
+    id: "e8000000-0000-4000-8000-000000000008",
+    company_id: sampleCompany.id,
+    run_id: sampleRuns[1].id,
+    sequence: 2,
+    event_type: "plan.proposed",
+    summary: "Chief of Staff proposed 2 sequential work items for retention audit",
+    payload_json: { work_items_count: 2 },
+    created_at: "2026-07-15T09:06:00Z",
+  },
+  {
+    id: "e9000000-0000-4000-8000-000000000009",
+    company_id: sampleCompany.id,
+    run_id: sampleRuns[1].id,
+    sequence: 3,
+    event_type: "plan.approved",
+    summary: "Owner approved customer retention audit plan",
+    payload_json: { approved_by: "owner" },
+    created_at: "2026-07-15T09:10:00Z",
+  },
+  {
+    id: "e1000000-0000-4000-8000-000000000010",
+    company_id: sampleCompany.id,
+    run_id: sampleRuns[1].id,
+    sequence: 4,
+    event_type: "work.completed",
+    summary: "Operations Manager completed Q2 churn factor analysis",
+    payload_json: {},
+    created_at: "2026-07-15T11:00:00Z",
+  },
+  {
+    id: "e1100000-0000-4000-8000-000000000011",
+    company_id: sampleCompany.id,
+    run_id: sampleRuns[1].id,
+    sequence: 5,
+    event_type: "brief.created",
+    summary: "Chief of Staff synthesized Customer Retention Executive Brief",
+    payload_json: {},
+    created_at: "2026-07-15T11:40:00Z",
+  },
+  {
+    id: "e1200000-0000-4000-8000-000000000012",
+    company_id: sampleCompany.id,
+    run_id: sampleRuns[1].id,
+    sequence: 6,
+    event_type: "run.completed",
+    summary: "Successfully finished customer retention audit run",
+    payload_json: {},
+    created_at: "2026-07-15T11:45:00Z",
+  },
+  {
+    id: "e1300000-0000-4000-8000-000000000013",
+    company_id: sampleCompany.id,
+    run_id: sampleRuns[2].id,
+    sequence: 1,
+    event_type: "run.created",
+    summary: "Started retry attempt for bookkeeping service launch",
+    payload_json: { objective_id: sampleObjectives[0].id },
+    created_at: "2026-07-26T14:00:00Z",
+  },
+  {
+    id: "e1400000-0000-4000-8000-000000000014",
+    company_id: sampleCompany.id,
+    run_id: sampleRuns[2].id,
+    sequence: 2,
+    event_type: "work.failed",
+    summary: "Marketing Specialist timed out while querying external vendor API",
+    payload_json: { error: "Timeout after 60 seconds" },
+    created_at: "2026-07-26T14:11:00Z",
+  },
+  {
+    id: "e1500000-0000-4000-8000-000000000015",
+    company_id: sampleCompany.id,
+    run_id: sampleRuns[2].id,
+    sequence: 3,
+    event_type: "run.failed",
+    summary: "Run failed due to specialist timeout; marked retryable",
+    payload_json: { error_code: "ERR_SPECIALIST_TIMEOUT" },
+    created_at: "2026-07-26T14:12:00Z",
+  },
 ];
 
 export const sampleArtifacts: Artifact[] = [
@@ -448,5 +538,30 @@ Approve the go-to-market launch for the Bookkeeping Service with a standard pric
     version: 1,
     created_at: "2026-07-27T09:45:00Z",
     updated_at: "2026-07-27T09:45:00Z",
+  },
+  {
+    id: "40000000-0000-4000-8000-000000000003",
+    company_id: sampleCompany.id,
+    run_id: sampleRuns[1].id,
+    work_item_id: null,
+    artifact_type: "audit_report",
+    title: "Q2 Customer Retention & Churn Audit Report",
+    content_markdown: `# Q2 Customer Retention & Churn Audit Report
+
+## Audit Scope
+Analyzed churn events across Q2 for SaaS subscriptions to identify root operational and product causes without headcount additions.
+
+### Key Findings
+1. **Onboarding Lag**: 42% of churned accounts failed to complete initial integration within the first 14 days.
+2. **Support Ticket Routing**: High-priority invoicing inquiries averaged a 28-hour resolution time due to manual dispatching.
+3. **Feature Gap Mitigation**: Only 12% of cancellations cited missing features; operational friction was the dominant factor.
+
+## Prioritized Operational Fixes
+- **Fix 1**: Implement automated 3-day onboarding checklist with SLA monitoring.
+- **Fix 2**: Configure keyword-based routing rules in the ticketing desk for immediate finance tier escalation.
+- **Fix 3**: Deploy automated self-serve invoice recovery link in billing reminder emails.`,
+    version: 1,
+    created_at: "2026-07-15T11:20:00Z",
+    updated_at: "2026-07-15T11:20:00Z",
   },
 ];

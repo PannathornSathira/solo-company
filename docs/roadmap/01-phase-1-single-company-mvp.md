@@ -238,3 +238,9 @@ Phase 1 is complete when:
 - the owner can judge what each agent did and what artifact it produced.
 
 Do not begin Phase 2 merely because the chat response works. The full objective-to-artifact loop must be reliable first.
+
+## Phase 1 Status & Completion
+
+- **Status**: Completed via **P1-M08** ([`docs/modules/phase-1/p1-m08.md`](../modules/phase-1/p1-m08.md)).
+- **Operator Guide**: See [`docs/operator-guide.md`](../operator-guide.md) for configuration, local PostgreSQL/Alembic setup, and troubleshooting.
+- **Demo Walkthrough**: See [`docs/demo.md`](../demo.md) for step-by-step instructions to run the Phase 1 end-to-end demo from a clean checkout.
